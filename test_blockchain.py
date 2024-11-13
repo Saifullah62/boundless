@@ -36,4 +36,23 @@ def test_merkle_tree():
     merkle_tree = MerkleTree(transactions)
     assert merkle_tree.root is not None  # Check Merkle root is generated
 
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization
+
+# Generate private and public keys
+private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+public_key = private_key.public_key()
+
+# Serialize public key to PEM format to use it in transactions
+public_key_pem = public_key.public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo
+).decode()
+
+# Create a new transaction and sign it with the private key
+transaction = Transaction(sender=public_key_pem, receiver="receiver_address", amount=10.0, private_key=private_key)
+
+# Print transaction details
+print(f"Transaction: {transaction}")
+print(f"Signature: {transaction.signature.hex()}")
 
