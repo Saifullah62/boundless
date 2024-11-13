@@ -4,47 +4,108 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Blockchain Dashboard</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+      }
+      h1,
+      h2 {
+        color: #333;
+      }
+      ul {
+        list-style-type: none;
+        padding: 0;
+      }
+      li {
+        margin: 10px 0;
+      }
+      form {
+        margin: 20px 0;
+      }
+      label {
+        display: block;
+        margin: 5px 0;
+      }
+      input {
+        margin-bottom: 10px;
+      }
+    </style>
   </head>
   <body>
     <h1>Blockchain Dashboard</h1>
 
-    <!-- Display Blockchain -->
-    <h2>Blockchain</h2>
-    <ul>
-      {% for block in blockchain %}
-      <li>Block {{ block.index }} - Hash: {{ block.hash }}</li>
+    <section>
+      <h2>Blockchain</h2>
       <ul>
-        <li>Previous Hash: {{ block.previous_hash }}</li>
-        <li>Merkle Root: {{ block.merkle_root }}</li>
-        <li>Timestamp: {{ block.timestamp }}</li>
+        {% for block in blockchain %}
         <li>
-          Transactions:
+          <strong>Block {{ block.index }}</strong> - Hash: {{ block.hash }}
           <ul>
-            {% for tx in block.transactions %}
-            <li>{{ tx.sender }} -> {{ tx.receiver }}: {{ tx.amount }}</li>
-            {% endfor %}
+            <li>Previous Hash: {{ block.previous_hash }}</li>
+            <li>Merkle Root: {{ block.merkle_root }}</li>
+            <li>Timestamp: {{ block.timestamp }}</li>
+            <li>
+              Transactions:
+              <ul>
+                {% for tx in block.transactions %}
+                <li>
+                  {{ tx.sender }} &rarr; {{ tx.receiver }}: {{ tx.amount }}
+                </li>
+                {% endfor %}
+              </ul>
+            </li>
           </ul>
         </li>
+        {% else %}
+        <li>No blocks available.</li>
+        {% endfor %}
       </ul>
-      {% endfor %}
-    </ul>
+    </section>
 
-    <!-- Add New Transaction -->
-    <h2>Add New Transaction</h2>
-    <form action="{{ url_for('new_transaction') }}" method="POST">
-      <label for="sender">Sender:</label>
-      <input type="text" id="sender" name="sender" required />
-      <label for="receiver">Receiver:</label>
-      <input type="text" id="receiver" name="receiver" required />
-      <label for="amount">Amount:</label>
-      <input type="number" id="amount" name="amount" required />
-      <button type="submit">Add Transaction and Mine Block</button>
-    </form>
+    <section>
+      <h2>Add New Transaction</h2>
+      <form
+        action="{{ url_for('new_transaction') }}"
+        method="POST"
+        onsubmit="return validateTransactionForm();"
+      >
+        <label for="sender">Sender:</label>
+        <input type="text" id="sender" name="sender" required />
+        <label for="receiver">Receiver:</label>
+        <input type="text" id="receiver" name="receiver" required />
+        <label for="amount">Amount:</label>
+        <input type="number" id="amount" name="amount" required min="0" />
+        <button type="submit">Add Transaction and Mine Block</button>
+      </form>
+    </section>
 
-    <!-- Validate Blockchain -->
-    <h2>Validate Blockchain</h2>
-    <form action="{{ url_for('validate_blockchain') }}" method="GET">
-      <button type="submit">Validate Blockchain</button>
-    </form>
+    <section>
+      <h2>Validate Blockchain</h2>
+      <form action="{{ url_for('validate_blockchain') }}" method="GET">
+        <button type="submit">Validate Blockchain</button>
+      </form>
+    </section>
+
+    <script>
+      /**
+       * Validates the transaction form before submission.
+       * Ensures that all fields are filled and the amount is greater than zero.
+       * @returns {boolean} True if the form is valid, false otherwise.
+       */
+      const validateTransactionForm = () => {
+        const sender = document.getElementById("sender").value.trim();
+        const receiver = document.getElementById("receiver").value.trim();
+        const amount = parseFloat(document.getElementById("amount").value);
+
+        if (!sender || !receiver || amount <= 0) {
+          alert(
+            "Please fill in all fields correctly. Amount must be greater than zero."
+          );
+          return false;
+        }
+        return true;
+      };
+    </script>
   </body>
 </html>
