@@ -70,11 +70,10 @@ class Transaction:
     def sign_transaction(self, private_key):
         """Signs the transaction using the sender's private key."""
         transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
-        signature = private_key.sign(
+        self.signature = private_key.sign(
             transaction_data,
             ec.ECDSA(hashes.SHA256())
         )
-        self.signature = signature
 
     def verify_signature(self, public_key):
         """Verifies the transaction signature."""
@@ -224,7 +223,11 @@ class Blockchain:
 
     def get_public_key(self, public_key_pem):
         """Deserializes a public key from PEM format."""
-        return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
+        try:
+            return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
+        except ValueError as e:
+            logging.error(f"Failed to load public key: {e}")
+            raise
 
     def connect_to_blockchain(self, host):
         """Connect to a peer's blockchain and sync if their chain is longer."""
@@ -307,6 +310,7 @@ def start_server(blockchain):
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
+
 
 def rate_limit_check(ip):
     """Check if the given IP address exceeds the rate limit."""
