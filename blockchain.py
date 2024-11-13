@@ -130,19 +130,9 @@ class Block:
     def mine_block(self, difficulty):
         """Mines the block by finding a hash that meets the difficulty target."""
         target = "0" * difficulty
-        start_time = time.time()
         while self.hash[:difficulty] != target:
             self.nonce += 1
             self.hash = self.calculate_hash()
-        end_time = time.time()
-        mining_duration = end_time - start_time
-        logging.info(f"Block mined in {mining_duration:.2f} seconds with difficulty {difficulty}")
-
-        # Adjust difficulty based on mining duration to maintain an average block time of approximately 3 minutes
-        if mining_duration < 180:
-            difficulty += 1
-        elif mining_duration > 180:
-            difficulty = max(1, difficulty - 1)
 
 class Blockchain:
     """Represents the blockchain itself, managing the chain of blocks."""
@@ -151,6 +141,7 @@ class Blockchain:
         self.difficulty = difficulty
         self.filename = filename
         self.load_chain()
+        self.block_times = []  # Track mining times for blocks
 
     def create_genesis_block(self):
         """Creates the first block in the blockchain."""
@@ -163,7 +154,34 @@ class Blockchain:
     def add_block(self, new_block):
         """Adds a new block to the blockchain after mining it."""
         new_block.previous_hash = self.get_latest_block().hash
+        start_time = time.time()
         new_block.mine_block(self.difficulty)
+        end_time = time.time()
+
+        # Record mining duration
+        mining_duration = end_time - start_time
+        self.block_times.append(mining_duration)
+        logging.info(f"Block {new_block.index} mined in {mining_duration:.2f} seconds with difficulty {self.difficulty}")
+
+        # Adjust difficulty based on average block time over last 10 blocks
+        if len(self.block_times) >= 10:
+            avg_mining_duration = sum(self.block_times[-10:]) / 10
+            target_duration = 180  # Target block time in seconds
+            lower_bound = 150  # Lower acceptable bound
+            upper_bound = 210  # Upper acceptable bound
+
+            if avg_mining_duration < lower_bound:
+                self.difficulty = min(self.difficulty + 2, self.difficulty * 2)  # Cap the increase for smoother transition
+            elif avg_mining_duration > upper_bound:
+                self.difficulty = max(1, max(self.difficulty - 2, int(self.difficulty / 2)))  # Cap the decrease
+            else:
+                # Proportional adjustment if within 10% difference
+                adjustment_factor = avg_mining_duration / target_duration
+                if adjustment_factor < 0.9:
+                    self.difficulty = int(self.difficulty * adjustment_factor)
+                elif adjustment_factor > 1.1:
+                    self.difficulty = max(1, int(self.difficulty / adjustment_factor))
+
         self.chain.append(new_block)
         self.save_chain()
 
@@ -333,3 +351,4 @@ def rate_limit_check(ip):
     # Log new request
     rate_limit_tracker[ip].append(current_time)
     return True
+
