@@ -1,33 +1,65 @@
 import json
 from blockchain import Block, Blockchain
 
-def test_blockchain():
-    print("Creating a blockchain with difficulty 2 for testing...")
-    blockchain = Blockchain(difficulty=2)
-    
-    print("Mining block 1...")
-    blockchain.add_block(Block(1, blockchain.get_latest_block().hash, "Data for Block 1"))
-    
-    print("Mining block 2...")
-    blockchain.add_block(Block(2, blockchain.get_latest_block().hash, "Data for Block 2"))
-    
-    print("Mining block 3...")
-    blockchain.add_block(Block(3, blockchain.get_latest_block().hash, "Data for Block 3"))
 
-    print("\nBlockchain verification:")
-    is_valid = blockchain.is_chain_valid()
-    print(f"Blockchain valid: {is_valid}")
+def create_and_mine_block(blockchain, index, data):
+    """
+    Creates and mines a new block in the blockchain.
     
-    # Displaying the blockchain
-    for block in blockchain.chain:
-        print(json.dumps({
+    Args:
+        blockchain (Blockchain): The blockchain instance to which the block will be added.
+        index (int): The index of the block to be created.
+        data (str): The data to be stored in the block.
+    """
+    print(f"Mining block {index}...")
+    latest_block = blockchain.get_latest_block()
+    blockchain.add_block(Block(index, latest_block.hash, data))
+
+
+def display_blockchain(chain):
+    """
+    Displays the entire blockchain in a readable JSON format.
+    
+    Args:
+        chain (list): The list of blocks in the blockchain.
+    """
+    print("\nDisplaying the blockchain:")
+    blocks_data = [
+        {
             "Index": block.index,
             "Timestamp": block.timestamp,
             "Data": block.data,
             "Nonce": block.nonce,
             "Hash": block.hash,
             "Previous Hash": block.previous_hash
-        }, indent=4))
+        }
+        for block in chain
+    ]
+    print(json.dumps(blocks_data, indent=4))
+
+
+def test_blockchain():
+    """
+    Tests the blockchain by creating a new instance, mining blocks, and verifying the chain.
+    """
+    print("Creating a blockchain with difficulty 2 for testing...")
+    blockchain = Blockchain(difficulty=2)
+    
+    # Mine blocks
+    for i in range(1, 4):
+        create_and_mine_block(blockchain, i, f"Data for Block {i}")
+
+    # Verify blockchain
+    print("\nBlockchain verification:")
+    is_valid = blockchain.is_chain_valid()
+    print(f"Blockchain valid: {is_valid}")
+    
+    # Display the blockchain
+    display_blockchain(blockchain.chain)
+
 
 if __name__ == "__main__":
-    test_blockchain()
+    try:
+        test_blockchain()
+    except Exception as e:
+        print(f"Error in blockchain test: {e}")
