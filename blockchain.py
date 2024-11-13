@@ -130,9 +130,19 @@ class Block:
     def mine_block(self, difficulty):
         """Mines the block by finding a hash that meets the difficulty target."""
         target = "0" * difficulty
+        start_time = time.time()
         while self.hash[:difficulty] != target:
             self.nonce += 1
             self.hash = self.calculate_hash()
+        end_time = time.time()
+        mining_duration = end_time - start_time
+        logging.info(f"Block mined in {mining_duration:.2f} seconds with difficulty {difficulty}")
+
+        # Adjust difficulty based on mining duration to maintain an average block time of approximately 3 minutes
+        if mining_duration < 180:
+            difficulty += 1
+        elif mining_duration > 180:
+            difficulty = max(1, difficulty - 1)
 
 class Blockchain:
     """Represents the blockchain itself, managing the chain of blocks."""
@@ -310,7 +320,6 @@ def start_server(blockchain):
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
-
 
 def rate_limit_check(ip):
     """Check if the given IP address exceeds the rate limit."""
