@@ -8,6 +8,8 @@ import re
 import socket
 import ssl
 import secrets
+from collections import defaultdict
+from datetime import datetime, timedelta
 
 # Third-party imports
 from cryptography.hazmat.primitives import serialization, hashes
@@ -20,6 +22,8 @@ from dotenv import load_dotenv
 # Network constants for peer-to-peer communication
 PORT = 5000
 BUFFER_SIZE = 4096
+RATE_LIMIT_WINDOW = timedelta(seconds=10)  # Rate limiting window
+MAX_REQUESTS_PER_WINDOW = 5
 
 # Setup logging
 logging.basicConfig(
@@ -34,6 +38,9 @@ load_dotenv()
 
 # Access token for peer authentication
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", secrets.token_hex(16))
+
+# Rate limiting dictionary
+rate_limit_tracker = defaultdict(list)
 
 class Transaction:
     """Represents a transaction in the blockchain."""
@@ -217,7 +224,7 @@ class Blockchain:
             previous_block = chain[i - 1]
             if current_block.hash != current_block.calculate_hash():
                 return False
-            if current_block.previous_hash != previous_block.hash:
+            if current_block.previous_hash != previous_block.hash():
                 return False
         return True
 
@@ -238,6 +245,11 @@ def start_server(blockchain):
                 try:
                     client_socket, address = tls_server.accept()
                     with client_socket:
+                        if not rate_limit_check(address[0]):
+                            logging.warning(f"Rate limit exceeded for {address[0]}")
+                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                            continue
+
                         request = client_socket.recv(BUFFER_SIZE).decode()
                         request_parts = request.split("|")
 
@@ -250,3 +262,16 @@ def start_server(blockchain):
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
+
+def rate_limit_check(ip):
+    """Check if the given IP address exceeds the rate limit."""
+    current_time = datetime.now()
+    request_times = rate_limit_tracker[ip]
+    # Remove outdated requests
+    rate_limit_tracker[ip] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
+    # Check current rate
+    if len(rate_limit_tracker[ip]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+    # Log new request
+    rate_limit_tracker[ip].append(current_time)
+    return True
