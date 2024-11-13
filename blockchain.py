@@ -6,6 +6,7 @@ import time
 import logging
 import re
 import socket
+import ssl
 
 # Third-party imports
 from cryptography.hazmat.primitives import serialization, hashes
@@ -52,8 +53,9 @@ class MerkleTree:
 
     @staticmethod
     def hash_data(data):
-        """Hashes the given data using SHA-256."""
-        return hashlib.sha256(data.encode()).hexdigest()
+        """Hashes the given data using SHA-512."""
+        salt = os.urandom(16)
+        return hashlib.sha512(salt + data.encode()).hexdigest()
 
     def build_tree(self, leaves):
         """Builds the Merkle Tree iteratively from the leaves."""
@@ -78,9 +80,9 @@ class Block:
         self.hash = self.calculate_hash()
 
     def calculate_hash(self):
-        """Calculates the SHA-256 hash of the block."""
+        """Calculates the SHA-512 hash of the block."""
         block_string = f"{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}".encode()
-        return hashlib.sha256(block_string).hexdigest()
+        return hashlib.sha512(block_string).hexdigest()
 
     def mine_block(self, difficulty):
         """Mines the block by finding a hash that meets the difficulty target."""
@@ -174,25 +176,28 @@ class Blockchain:
     def connect_to_blockchain(self, host):
         """Connect to a peer's blockchain and sync if their chain is longer."""
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((host, PORT))
-                s.sendall(b"REQUEST_BLOCKCHAIN")
-                data = b""
-                while True:
-                    part = s.recv(BUFFER_SIZE)
-                    if not part:
-                        break
-                    data += part
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((host, PORT)) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as s:
+                    s.sendall(b"REQUEST_BLOCKCHAIN")
+                    data = b""
+                    while True:
+                        part = s.recv(BUFFER_SIZE)
+                        if not part:
+                            break
+                        data += part
 
-                received_chain = json.loads(data.decode())
-                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+                    received_chain = json.loads(data.decode())
+                    received_chain_objects = [self.dict_to_block(block) for block in received_chain]
 
-                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
-                    logging.info("Replacing current blockchain with the received chain.")
-                    self.chain = received_chain_objects
-                    self.save_chain()
-                else:
-                    logging.info("Received blockchain is not valid or shorter. No update performed.")
+                    if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                        logging.info("Replacing current blockchain with the received chain.")
+                        self.chain = received_chain_objects
+                        self.save_chain()
+                    else:
+                        logging.info("Received blockchain is not valid or shorter. No update performed.")
 
         except socket.error as e:
             logging.error(f"Failed to connect to {host}:{PORT} - {e}")
@@ -216,20 +221,24 @@ class Blockchain:
 
 def start_server(blockchain):
     """Starts a server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("0.0.0.0", PORT))
         server.listen(5)
-        logging.info(f"Blockchain server listening on port {PORT}")
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on port {PORT} with TLS")
 
-        while True:
-            try:
-                client_socket, address = server.accept()
-                with client_socket:
-                    request = client_socket.recv(BUFFER_SIZE).decode()
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    with client_socket:
+                        request = client_socket.recv(BUFFER_SIZE).decode()
 
-                    if request == "REQUEST_BLOCKCHAIN":
-                        blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
-                        client_socket.sendall(blockchain_data.encode())
-                        logging.info(f"Sent blockchain to peer at {address}")
-            except Exception as e:
-                logging.error(f"Error handling client connection: {e}")
+                        if request == "REQUEST_BLOCKCHAIN":
+                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
+                            client_socket.sendall(blockchain_data.encode())
+                            logging.info(f"Sent blockchain to peer at {address}")
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
