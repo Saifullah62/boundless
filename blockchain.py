@@ -159,11 +159,17 @@ class Blockchain:
         end_time = time.time()
 
         # Record mining duration
-        mining_duration = end_time - start_time
-        self.block_times.append(mining_duration)
-        logging.info(f"Block {new_block.index} mined in {mining_duration:.2f} seconds with difficulty {self.difficulty}")
+        self.block_times.append(end_time - start_time)
+        logging.info(f"Block {new_block.index} mined in {end_time - start_time:.2f} seconds with difficulty {self.difficulty}")
 
         # Adjust difficulty based on average block time over last 10 blocks
+        self.adjust_difficulty()
+
+        self.chain.append(new_block)
+        self.save_chain()
+
+    def adjust_difficulty(self):
+        """Adjusts the mining difficulty based on the average block time."""
         if len(self.block_times) >= 10:
             avg_mining_duration = sum(self.block_times[-10:]) / 10
             target_duration = 180  # Target block time in seconds
@@ -181,9 +187,6 @@ class Blockchain:
                     self.difficulty = int(self.difficulty * adjustment_factor)
                 elif adjustment_factor > 1.1:
                     self.difficulty = max(1, int(self.difficulty / adjustment_factor))
-
-        self.chain.append(new_block)
-        self.save_chain()
 
     def save_chain(self):
         """Saves the blockchain to a JSON file."""
@@ -339,6 +342,7 @@ def start_server(blockchain):
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
 
+
 def rate_limit_check(ip):
     """Check if the given IP address exceeds the rate limit."""
     current_time = datetime.now()
@@ -351,4 +355,3 @@ def rate_limit_check(ip):
     # Log new request
     rate_limit_tracker[ip].append(current_time)
     return True
-
