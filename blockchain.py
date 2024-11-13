@@ -7,6 +7,7 @@ import logging
 import re
 import socket
 import ssl
+import secrets
 
 # Third-party imports
 from cryptography.hazmat.primitives import serialization, hashes
@@ -30,6 +31,9 @@ logging.basicConfig(
 
 # Load environment variables
 load_dotenv()
+
+# Access token for peer authentication
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", secrets.token_hex(16))
 
 class Transaction:
     """Represents a transaction in the blockchain."""
@@ -181,7 +185,7 @@ class Blockchain:
             context.verify_mode = ssl.CERT_NONE
             with socket.create_connection((host, PORT)) as sock:
                 with context.wrap_socket(sock, server_hostname=host) as s:
-                    s.sendall(b"REQUEST_BLOCKCHAIN")
+                    s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
                     data = b""
                     while True:
                         part = s.recv(BUFFER_SIZE)
@@ -235,10 +239,14 @@ def start_server(blockchain):
                     client_socket, address = tls_server.accept()
                     with client_socket:
                         request = client_socket.recv(BUFFER_SIZE).decode()
+                        request_parts = request.split("|")
 
-                        if request == "REQUEST_BLOCKCHAIN":
+                        if len(request_parts) == 2 and request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
                             blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
                             client_socket.sendall(blockchain_data.encode())
                             logging.info(f"Sent blockchain to peer at {address}")
+                        else:
+                            logging.warning(f"Unauthorized access attempt from {address}")
+                            client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
