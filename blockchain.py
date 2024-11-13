@@ -17,6 +17,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature, decode_dss_signature
+from cryptography.hazmat.primitives.asymmetric import utils
+from cryptography.exceptions import InvalidSignature
 from dotenv import load_dotenv
 
 # Network constants for peer-to-peer communication
@@ -44,17 +47,47 @@ rate_limit_tracker = defaultdict(list)
 
 class Transaction:
     """Represents a transaction in the blockchain."""
-    def __init__(self, sender, receiver, amount):
+    def __init__(self, sender, receiver, amount, private_key=None):
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
+        self.signature = None
+        if private_key:
+            self.sign_transaction(private_key)
 
     def __repr__(self):
         return f"Transaction({self.sender} -> {self.receiver}: {self.amount})"
 
     def to_dict(self):
         """Converts the transaction to a dictionary representation."""
-        return {"sender": self.sender, "receiver": self.receiver, "amount": self.amount}
+        return {
+            "sender": self.sender,
+            "receiver": self.receiver,
+            "amount": self.amount,
+            "signature": self.signature.hex() if self.signature else None
+        }
+
+    def sign_transaction(self, private_key):
+        """Signs the transaction using the sender's private key."""
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        signature = private_key.sign(
+            transaction_data,
+            ec.ECDSA(hashes.SHA256())
+        )
+        self.signature = signature
+
+    def verify_signature(self, public_key):
+        """Verifies the transaction signature."""
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        try:
+            public_key.verify(
+                self.signature,
+                transaction_data,
+                ec.ECDSA(hashes.SHA256())
+            )
+            return True
+        except InvalidSignature:
+            return False
 
 class MerkleTree:
     """Constructs a Merkle Tree from a list of transactions."""
@@ -172,7 +205,7 @@ class Blockchain:
         return block
 
     def is_chain_valid(self):
-        """Validates the blockchain by checking hashes and previous hashes."""
+        """Validates the blockchain by checking hashes, previous hashes, and transaction signatures."""
         for i in range(1, len(self.chain)):
             current_block = self.chain[i]
             previous_block = self.chain[i - 1]
@@ -182,7 +215,16 @@ class Blockchain:
             if current_block.previous_hash != previous_block.hash:
                 logging.error(f"Invalid block at index {i}: previous hash mismatch.")
                 return False
+            # Verify all transactions
+            for transaction in current_block.transactions:
+                if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+                    logging.error(f"Invalid signature for transaction {transaction}")
+                    return False
         return True
+
+    def get_public_key(self, public_key_pem):
+        """Deserializes a public key from PEM format."""
+        return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
 
     def connect_to_blockchain(self, host):
         """Connect to a peer's blockchain and sync if their chain is longer."""
@@ -218,14 +260,17 @@ class Blockchain:
             logging.error(f"Unexpected error while connecting to blockchain: {e}")
 
     def is_valid_chain(self, chain):
-        """Check if a given chain is valid by verifying hashes and previous hashes."""
+        """Check if a given chain is valid by verifying hashes, previous hashes, and signatures."""
         for i in range(1, len(chain)):
             current_block = chain[i]
             previous_block = chain[i - 1]
             if current_block.hash != current_block.calculate_hash():
                 return False
-            if current_block.previous_hash != previous_block.hash():
+            if current_block.previous_hash != previous_block.hash:
                 return False
+            for transaction in current_block.transactions:
+                if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+                    return False
         return True
 
 # Server function for peer-to-peer communication
