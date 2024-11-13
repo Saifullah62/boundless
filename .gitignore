@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 
-# Distribution / packaging
+# Distribution / Packaging
 .Python
 build/
 develop-eggs/
@@ -30,11 +30,11 @@ MANIFEST
 *.manifest
 *.spec
 
-# Installer logs
+# Installer Logs
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# Unit Test / Coverage Reports
 htmlcov/
 .tox/
 .nox/
@@ -50,36 +50,22 @@ coverage.xml
 *.mo
 *.pot
 
-# Django stuff:
-*.log
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Sphinx documentation
+# Documentation
 docs/_build/
 
-# PyBuilder
-target/
-
-# Jupyter Notebook checkpoints
+# Jupyter Notebooks
 *.ipynb_checkpoints
 
-# VS Code files
+# VS Code and JetBrains
 .vscode/
-
-# JetBrains IDEs
 .idea/
 
-# macOS system files
+# macOS and Windows System Files
 .DS_Store
-
-# Windows system files
 Thumbs.db
 desktop.ini
 
-# Local environment files
+# Local Environment and Dependency Files
 .env
 .venv/
 venv/
@@ -87,6 +73,12 @@ env/
 env.bak/
 venv.bak/
 
-# Test blockchain files
-test_blockchain.json  # For persistence test file created during test runs
-blockchain.json       # Main blockchain data file, if not needed in version control
+# Blockchain Project Specific Files
+test_blockchain.json
+blockchain.json
+
+# Optional: Docker Compose Override
+docker-compose.override.yml
+
+# Ignore .env file
+.env
