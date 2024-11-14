@@ -48,18 +48,29 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", secrets.token_hex(16))
 # Rate limiting dictionary
 rate_limit_tracker = defaultdict(lambda: defaultdict(list))
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.exceptions import InvalidSignature
+import logging
+import json
+
 class Transaction:
-    """Represents a transaction in the blockchain."""
-    def __init__(self, sender, receiver, amount, private_key=None):
+    """Base class representing a transaction in the blockchain."""
+    
+    def __init__(self, sender, receiver, amount, tx_type="standard", private_key=None, metadata=None):
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
+        self.tx_type = tx_type  # Defines the transaction type (standard, contract, asset, etc.)
+        self.metadata = metadata or {}  # Optional metadata for additional information
         self.signature = None
+        
+        # Auto-sign the transaction if a private key is provided
         if private_key:
             self.sign_transaction(private_key)
 
     def __repr__(self):
-        return f"Transaction({self.sender} -> {self.receiver}: {self.amount})"
+        return f"{self.tx_type.capitalize()}Transaction({self.sender} -> {self.receiver}: {self.amount})"
 
     def to_dict(self):
         """Converts the transaction to a dictionary representation."""
@@ -67,12 +78,14 @@ class Transaction:
             "sender": self.sender,
             "receiver": self.receiver,
             "amount": self.amount,
+            "tx_type": self.tx_type,
+            "metadata": self.metadata,
             "signature": self.signature.hex() if self.signature else None
         }
 
     def sign_transaction(self, private_key):
         """Signs the transaction using the sender's private key."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.tx_type}{json.dumps(self.metadata)}".encode()
         self.signature = private_key.sign(
             transaction_data,
             ec.ECDSA(hashes.SHA256())
@@ -80,7 +93,7 @@ class Transaction:
 
     def verify_signature(self, public_key):
         """Verifies the transaction signature."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.tx_type}{json.dumps(self.metadata)}".encode()
         try:
             public_key.verify(
                 self.signature,
@@ -89,8 +102,25 @@ class Transaction:
             )
             return True
         except InvalidSignature:
-            logging.warning(f"Invalid signature for transaction from {self.sender} to {self.receiver}.")
+            logging.warning(f"Invalid signature for {self.tx_type} transaction from {self.sender} to {self.receiver}.")
             return False
+
+
+# Specialized Transaction Subclasses
+class ContractExecutionTransaction(Transaction):
+    """Transaction type for executing a smart contract."""
+    
+    def __init__(self, sender, contract_address, payload, private_key=None):
+        super().__init__(sender, contract_address, amount=0, tx_type="contract_execution", private_key=private_key)
+        self.metadata['payload'] = payload  # Payload contains contract call data
+
+
+class AssetTransferTransaction(Transaction):
+    """Transaction type for transferring digital assets (e.g., NFTs)."""
+    
+    def __init__(self, sender, receiver, asset_id, amount=1, private_key=None):
+        super().__init__(sender, receiver, amount=amount, tx_type="asset_transfer", private_key=private_key)
+        self.metadata['asset_id'] = asset_id  # Unique identifier for the asset being transferred
 
 class MerkleTree:
     """Constructs a Merkle Tree from a list of transactions."""
