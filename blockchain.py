@@ -953,3 +953,264 @@ if __name__ == "__main__":
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
 
+from cryptography.fernet import Fernet
+
+# Generate a key for encryption
+key = Fernet.generate_key()
+cipher_suite = Fernet(key)
+
+# Adding enhanced functionality: Peer-to-peer synchronization and data encryption
+
+class BlockchainNodeSecure:
+    def __init__(self, node_id, difficulty=2):
+        self.node_id = node_id
+        self.blockchain = Blockchain(difficulty=difficulty)
+        self.geosovereign = GeoSovereign()
+        self.regblock = RegBlock()
+        self.transparency_suite = TransparencySuite()
+        self.erasure_guard = ErasureGuard()
+        self.audit_toolkit = ComplianceAuditToolkit()
+        self.peers = []  # List of peer nodes
+
+    def add_peer(self, peer_node):
+        self.peers.append(peer_node)
+
+    def receive_transaction(self, transaction):
+        # Encrypt transaction data at rest
+        transaction_data = json.dumps(transaction.to_dict()).encode()
+        encrypted_data = cipher_suite.encrypt(transaction_data)
+        transaction.encrypted_data = encrypted_data
+
+        # Determine geographic region for compliance
+        region = self.geosovereign.detect_data_origin(transaction)
+        # Apply regulatory compliance based on detected region
+        self.regblock.apply_regulations(region)
+        # Add encrypted transaction to the blockchain's mempool
+        self.blockchain.add_transaction(transaction)
+
+    def mine_block(self):
+        # Before mining, check all transactions for user consent via Transparency Suite
+        for tx in self.blockchain.mempool:
+            if tx.sender in self.transparency_suite.consent_registry:
+                if self.transparency_suite.consent_registry[tx.sender] != "approved":
+                    print(f"Transaction from {tx.sender} not approved for mining.")
+                    self.blockchain.mempool.remove(tx)
+
+        # Proceed with mining
+        self.blockchain.mine_block()
+
+        # Broadcast new block to peers for synchronization
+        for peer in self.peers:
+            peer.synchronize_blockchain(self.blockchain)
+
+    def synchronize_blockchain(self, new_chain):
+        # Update the local chain if the received chain is longer and valid
+        if len(new_chain.chain) > len(self.blockchain.chain) and new_chain.is_chain_valid():
+            print(f"Node {self.node_id} synchronized its blockchain to match peer's longer chain.")
+            self.blockchain = copy.deepcopy(new_chain)
+
+    def perform_audit(self):
+        # Use the ComplianceAuditToolkit to audit the blockchain
+        self.audit_toolkit.audit(self.blockchain)
+
+    def decrypt_transaction(self, encrypted_data):
+        # Decrypt the transaction for reading or audit purposes
+        try:
+            decrypted_data = cipher_suite.decrypt(encrypted_data)
+            return json.loads(decrypted_data.decode())
+        except Exception as e:
+            print(f"Decryption failed: {e}")
+            return None
+
+
+# Updated test for enhanced synchronization and data security
+if __name__ == "__main__":
+    # Create enhanced blockchain nodes
+    node_A = BlockchainNodeSecure("A", difficulty=2)
+    node_B = BlockchainNodeSecure("B", difficulty=2)
+    node_C = BlockchainNodeSecure("C", difficulty=2)
+
+    # Establish peer connections
+    node_A.add_peer(node_B)
+    node_A.add_peer(node_C)
+    node_B.add_peer(node_A)
+    node_B.add_peer(node_C)
+    node_C.add_peer(node_A)
+    node_C.add_peer(node_B)
+
+    # Generate some transactions
+    transactions = [
+        Transaction("Alice", "Bob", 10),
+        Transaction("Charlie", "David", 20),
+        Transaction("Eve", "Frank", 50)
+    ]
+
+    # Add user consent for some transactions in Transparency Suite
+    node_A.transparency_suite.add_consent("Alice", "approved")
+    node_A.transparency_suite.add_consent("Charlie", "approved")
+
+    # Nodes receive and encrypt transactions
+    for tx in transactions:
+        node_A.receive_transaction(tx)
+        time.sleep(0.5)
+
+    # Nodes mine blocks
+    node_A.mine_block()
+    node_B.mine_block()  # B and C won't have transactions if A already mined the mempool
+
+    # Final state of each blockchain (with synchronization)
+    for node in [node_A, node_B, node_C]:
+        print(f"\nFinal blockchain for Node {node.node_id}:")
+        for block in node.blockchain.chain:
+            print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+
+            # Decrypt and display transactions
+            for tx in block.transactions:
+                decrypted_tx = node.decrypt_transaction(tx.encrypted_data)
+                if decrypted_tx:
+                    print(f"    Decrypted Transaction: {decrypted_tx}")
+import numpy as np
+from sklearn.ensemble import IsolationForest
+
+# Adding Jetson Nano capabilities simulation: AI-based anomaly detection using Isolation Forest
+
+class BlockchainNodeAI:
+    def __init__(self, node_id, difficulty=2):
+        self.node_id = node_id
+        self.blockchain = Blockchain(difficulty=difficulty)
+        self.geosovereign = GeoSovereign()
+        self.regblock = RegBlock()
+        self.transparency_suite = TransparencySuite()
+        self.erasure_guard = ErasureGuard()
+        self.audit_toolkit = ComplianceAuditToolkit()
+        self.peers = []  # List of peer nodes
+        self.isolation_forest_model = IsolationForest(contamination=0.1, random_state=42)
+        self.transaction_data = []
+
+    def add_peer(self, peer_node):
+        self.peers.append(peer_node)
+
+    def receive_transaction(self, transaction):
+        # Encrypt transaction data at rest
+        transaction_data = json.dumps(transaction.to_dict()).encode()
+        encrypted_data = cipher_suite.encrypt(transaction_data)
+        transaction.encrypted_data = encrypted_data
+
+        # Determine geographic region for compliance
+        region = self.geosovereign.detect_data_origin(transaction)
+        # Apply regulatory compliance based on detected region
+        self.regblock.apply_regulations(region)
+
+        # Simulate AI-based anomaly detection on the transaction
+        if not self.run_anomaly_detection(transaction):
+            print(f"Transaction from {transaction.sender} to {transaction.receiver} flagged as anomalous and not added.")
+            return  # Skip adding the anomalous transaction
+
+        # Add encrypted transaction to the blockchain's mempool
+        self.blockchain.add_transaction(transaction)
+
+    def run_anomaly_detection(self, transaction):
+        # Convert transaction to a numerical representation for AI processing
+        # Here, we use a simple representation of sender, receiver, and amount
+        sender_hash = hash(transaction.sender) % 100
+        receiver_hash = hash(transaction.receiver) % 100
+        transaction_amount = transaction.amount
+
+        # Prepare transaction data for prediction
+        transaction_feature = [sender_hash, receiver_hash, transaction_amount]
+        self.transaction_data.append(transaction_feature)
+
+        # Train the model with current data (in a real scenario, training would be offline and periodically)
+        if len(self.transaction_data) > 10:  # Start anomaly detection after collecting some data
+            np_transaction_data = np.array(self.transaction_data)
+            self.isolation_forest_model.fit(np_transaction_data)
+
+            # Predict if the current transaction is anomalous
+            prediction = self.isolation_forest_model.predict([transaction_feature])
+            return prediction[0] == 1  # Return True if not anomalous, False otherwise
+        else:
+            return True  # If not enough data, assume normal
+
+    def mine_block(self):
+        # Before mining, check all transactions for user consent via Transparency Suite
+        for tx in self.blockchain.mempool:
+            if tx.sender in self.transparency_suite.consent_registry:
+                if self.transparency_suite.consent_registry[tx.sender] != "approved":
+                    print(f"Transaction from {tx.sender} not approved for mining.")
+                    self.blockchain.mempool.remove(tx)
+
+        # Proceed with mining
+        self.blockchain.mine_block()
+
+        # Broadcast new block to peers for synchronization
+        for peer in self.peers:
+            peer.synchronize_blockchain(self.blockchain)
+
+    def synchronize_blockchain(self, new_chain):
+        # Update the local chain if the received chain is longer and valid
+        if len(new_chain.chain) > len(self.blockchain.chain) and new_chain.is_chain_valid():
+            print(f"Node {self.node_id} synchronized its blockchain to match peer's longer chain.")
+            self.blockchain = copy.deepcopy(new_chain)
+
+    def perform_audit(self):
+        # Use the ComplianceAuditToolkit to audit the blockchain
+        self.audit_toolkit.audit(self.blockchain)
+
+    def decrypt_transaction(self, encrypted_data):
+        # Decrypt the transaction for reading or audit purposes
+        try:
+            decrypted_data = cipher_suite.decrypt(encrypted_data)
+            return json.loads(decrypted_data.decode())
+        except Exception as e:
+            print(f"Decryption failed: {e}")
+            return None
+
+
+# Updated test for AI-enhanced blockchain node
+if __name__ == "__main__":
+    # Create AI-enhanced blockchain nodes
+    node_A = BlockchainNodeAI("A", difficulty=2)
+    node_B = BlockchainNodeAI("B", difficulty=2)
+    node_C = BlockchainNodeAI("C", difficulty=2)
+
+    # Establish peer connections
+    node_A.add_peer(node_B)
+    node_A.add_peer(node_C)
+    node_B.add_peer(node_A)
+    node_B.add_peer(node_C)
+    node_C.add_peer(node_A)
+    node_C.add_peer(node_B)
+
+    # Generate some transactions
+    transactions = [
+        Transaction("Alice", "Bob", 10),
+        Transaction("Charlie", "David", 2000),  # Anomalous transaction (high amount)
+        Transaction("Eve", "Frank", 50),
+        Transaction("Bob", "Eve", 5),
+        Transaction("David", "Alice", 1000),  # Another potentially anomalous transaction
+    ]
+
+    # Add user consent for some transactions in Transparency Suite
+    node_A.transparency_suite.add_consent("Alice", "approved")
+    node_A.transparency_suite.add_consent("Charlie", "approved")
+
+    # Nodes receive and verify transactions using AI-based anomaly detection
+    for tx in transactions:
+        node_A.receive_transaction(tx)
+        time.sleep(0.5)
+
+    # Nodes mine blocks
+    node_A.mine_block()
+    node_B.mine_block()  # B and C won't have transactions if A already mined the mempool
+
+    # Final state of each blockchain (with synchronization)
+    for node in [node_A, node_B, node_C]:
+        print(f"\nFinal blockchain for Node {node.node_id}:")
+        for block in node.blockchain.chain:
+            print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+
+            # Decrypt and display transactions
+            for tx in block.transactions:
+                decrypted_tx = node.decrypt_transaction(tx.encrypted_data)
+                if decrypted_tx:
+                    print(f"    Decrypted Transaction: {decrypted_tx}")
