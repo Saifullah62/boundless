@@ -714,4 +714,201 @@ if __name__ == "__main__":
         print(f"\nFinal blockchain for Node {node.node_id}:")
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+import mmap
+import os
+import json
+
+class BlockchainWithMmap:
+    def __init__(self, filename='blockchain_mmap.bin'):
+        self.filename = filename
+        # Ensure the file exists to prevent errors
+        if not os.path.exists(self.filename):
+            with open(self.filename, 'wb') as f:
+                f.write(b'')  # Initialize the file with an empty binary content
+
+    def save_block_to_file(self, block):
+        # Serialize the block to a JSON string and convert to bytes
+        block_data = json.dumps(block).encode('utf-8')
+
+        with open(self.filename, 'ab') as f:
+            # Write the length of the block data first, so we know how much to read
+            f.write(len(block_data).to_bytes(4, byteorder='little'))
+            f.write(block_data)
+
+    def load_block_using_mmap(self, block_index):
+        with open(self.filename, 'r+b') as f:
+            # Memory-map the file, size 0 means the entire file
+            mmapped_file = mmap.mmap(f.fileno(), 0)
+
+            current_pos = 0
+            current_block_index = 0
+
+            # Iterate over the mapped file to find the desired block
+            while current_pos < mmapped_file.size():
+                # Read the size of the next block (4 bytes)
+                block_size_bytes = mmapped_file[current_pos:current_pos + 4]
+                block_size = int.from_bytes(block_size_bytes, byteorder='little')
+
+                # Move to the start of the block data
+                current_pos += 4
+
+                if current_block_index == block_index:
+                    # Read the block data of the given size
+                    block_data = mmapped_file[current_pos:current_pos + block_size]
+                    block = json.loads(block_data.decode('utf-8'))
+                    mmapped_file.close()
+                    return block
+
+                # Move to the start of the next block
+                current_pos += block_size
+                current_block_index += 1
+
+            mmapped_file.close()
+            raise IndexError("Block index out of range.")
+
+# Example Usage
+blockchain = BlockchainWithMmap()
+
+# Adding a block
+example_block = {
+    "index": 1,
+    "previous_hash": "abc123",
+    "transactions": [{"sender": "Alice", "receiver": "Bob", "amount": 10}],
+    "timestamp": 1234567890,
+    "nonce": 0,
+    "merkle_root": "xyz789",
+    "hash": "def456"
+}
+blockchain.save_block_to_file(example_block)
+
+# Loading a block using mmap
+try:
+    loaded_block = blockchain.load_block_using_mmap(0)
+    print(f"Loaded Block: {loaded_block}")
+except IndexError as e:
+    print(e)
+import heapq
+import time
+import logging
+from collections import deque
+
+class Transaction:
+    def __init__(self, sender, receiver, amount, fee):
+        self.sender = sender
+        self.receiver = receiver
+        self.amount = amount
+        self.fee = fee
+        self.timestamp = time.time()
+
+    def __repr__(self):
+        return f"Transaction({self.sender} -> {self.receiver}: {self.amount}, Fee: {self.fee})"
+
+    def to_dict(self):
+        return {
+            "sender": self.sender,
+            "receiver": self.receiver,
+            "amount": self.amount,
+            "fee": self.fee,
+            "timestamp": self.timestamp
+        }
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
+        self.max_mempool_size = 1000  # Limit the total number of transactions in the mempool
+        self.min_fee_threshold = 1  # Minimum fee to keep in mempool
+
+        # Using a deque for efficient removal of low-fee transactions periodically
+        self.transaction_deque = deque()
+        self.load_chain()
+
+    def create_genesis_block(self):
+        return {
+            "index": 0,
+            "previous_hash": "0",
+            "transactions": [],
+            "timestamp": time.time(),
+            "nonce": 0,
+            "hash": "genesis_hash"
+        }
+
+    def add_transaction(self, transaction):
+        """Adds a transaction to the mempool with prioritization."""
+        # Use fee and timestamp to prioritize transactions in the mempool (higher fee is prioritized)
+        priority = (-transaction.fee, transaction.timestamp)  # Negative fee for max-heap behavior using min-heap
+        
+        if len(self.mempool) >= self.max_mempool_size:
+            # Check if the new transaction is worth replacing an existing one
+            lowest_priority_tx = heapq.nsmallest(1, self.mempool)[0]
+            if priority > lowest_priority_tx[0]:
+                # Remove the lowest priority transaction
+                heapq.heappop(self.mempool)
+                self.transaction_deque.popleft()
+                logging.info(f"Removing lower priority transaction from mempool due to size limit.")
+
+        if len(self.mempool) < self.max_mempool_size:
+            # Add the new transaction
+            heapq.heappush(self.mempool, (priority, transaction))
+            self.transaction_deque.append(transaction)
+            logging.info(f"Transaction {transaction} added to mempool with fee {transaction.fee}.")
+        else:
+            logging.info(f"Transaction {transaction} not added - mempool is full and transaction fee is too low.")
+
+    def clear_low_fee_transactions(self):
+        """Removes low-fee transactions that have been in the mempool for a long time."""
+        current_time = time.time()
+        clear_count = 0
+
+        while self.transaction_deque:
+            oldest_transaction = self.transaction_deque[0]
+            if (current_time - oldest_transaction.timestamp > 300) or (oldest_transaction.fee < self.min_fee_threshold):
+                # Remove from deque and heap
+                self.transaction_deque.popleft()
+                self.mempool = [(priority, tx) for priority, tx in self.mempool if tx != oldest_transaction]
+                heapq.heapify(self.mempool)
+                clear_count += 1
+            else:
+                break
+
+        if clear_count > 0:
+            logging.info(f"Cleared {clear_count} low-fee or stale transactions from the mempool.")
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            self.transaction_deque.popleft()
+            selected_transactions.append(transaction)
+        return selected_transactions
+
+# Example Usage
+if __name__ == "__main__":
+    blockchain = Blockchain()
+
+    # Adding some transactions
+    transactions = [
+        Transaction("Alice", "Bob", 10, 5),
+        Transaction("Charlie", "David", 20, 2),
+        Transaction("Eve", "Frank", 15, 3),
+        Transaction("Alice", "Frank", 25, 1)
+    ]
+
+    for tx in transactions:
+        blockchain.add_transaction(tx)
+
+    # Simulate clearing low-fee transactions
+    time.sleep(1)  # Simulate some delay
+    blockchain.clear_low_fee_transactions()
+
+    # Add another high-priority transaction
+    high_priority_tx = Transaction("Zara", "Leo", 50, 10)
+    blockchain.add_transaction(high_priority_tx)
+
+    # Select transactions for the next block
+    selected_transactions = blockchain.select_transactions_for_block()
+    print(f"Selected Transactions for Block: {selected_transactions}")
 
