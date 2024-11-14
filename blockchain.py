@@ -377,15 +377,47 @@ def start_server(blockchain):
                         request = client_socket.recv(BUFFER_SIZE).decode()
                         request_parts = request.split("|")
 
-                        if len(request_parts) == 2 and request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
+                        # Handle different requests
+                        if request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
                             blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
                             client_socket.sendall(blockchain_data.encode())
                             logging.info(f"Sent blockchain to peer at {address}")
+
+                        elif request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
+                            peer_list = ",".join(blockchain.peers)
+                            client_socket.sendall(peer_list.encode())
+                            logging.info(f"Sent peer list to peer at {address}")
+
+                        elif request_parts[0] == "NEW_TRANSACTION":
+                            # Deserialize transaction and add to mempool
+                            transaction_data = json.loads(request_parts[1])
+                            transaction = Transaction(**transaction_data)
+                            if blockchain.add_transaction(transaction):
+                                logging.info(f"Received and added new transaction from {address}")
+                            else:
+                                logging.warning(f"Failed to add transaction from {address}")
+
+                        elif request_parts[0] == "NEW_BLOCK":
+                            # Deserialize block and validate
+                            block_data = json.loads(request_parts[1])
+                            new_block = blockchain.dict_to_block(block_data)
+                            if blockchain.is_block_valid(new_block):
+                                blockchain.add_block(new_block)
+                                logging.info(f"Received and added new block from {address}")
+                            else:
+                                logging.warning(f"Invalid block received from {address}")
+
+                        elif request_parts[0] == "HANDSHAKE":
+                            # Basic handshake for compatibility check
+                            client_socket.sendall(b"HANDSHAKE_OK")
+                            logging.info(f"Handshake successful with {address}")
+
                         else:
                             logging.warning(f"Unauthorized access attempt from {address}")
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
+
 
 def rate_limit_check(ip):
     """Check if the given IP address exceeds the rate limit."""
@@ -399,6 +431,7 @@ def rate_limit_check(ip):
     # Log new request
     rate_limit_tracker[ip].append(current_time)
     return True
+
 import random
 import threading
 
@@ -462,6 +495,7 @@ class Blockchain:
         return f"{ip_address}:{PORT}"
 
 # Server modification to handle peer list requests
+
 def start_server(blockchain):
     """Starts a server to listen for blockchain requests from peers."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -501,6 +535,7 @@ def start_server(blockchain):
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
+
 import heapq
 
 class Blockchain:
@@ -559,6 +594,7 @@ class Blockchain:
     def get_mempool_transactions(self):
         """Returns the list of transactions currently in the mempool."""
         return [tx for _, tx in self.mempool]
+
 def start_server(blockchain):
     """Starts a server to listen for blockchain requests from peers."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -597,8 +633,10 @@ def start_server(blockchain):
                             # Deserialize transaction and add to mempool
                             transaction_data = json.loads(request_parts[1])
                             transaction = Transaction(**transaction_data)
-                            blockchain.add_transaction(transaction)
-                            logging.info(f"Received and added new transaction from {address}")
+                            if blockchain.add_transaction(transaction):
+                                logging.info(f"Received and added new transaction from {address}")
+                            else:
+                                logging.warning(f"Failed to add transaction from {address}")
 
                         elif request_parts[0] == "NEW_BLOCK":
                             # Deserialize block and validate
@@ -607,6 +645,8 @@ def start_server(blockchain):
                             if blockchain.is_block_valid(new_block):
                                 blockchain.add_block(new_block)
                                 logging.info(f"Received and added new block from {address}")
+                            else:
+                                logging.warning(f"Invalid block received from {address}")
 
                         elif request_parts[0] == "HANDSHAKE":
                             # Basic handshake for compatibility check
@@ -618,6 +658,8 @@ def start_server(blockchain):
                             client_socket.sendall(b"ACCESS_DENIED")
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
+
+
 def broadcast_transaction(self, transaction):
     """Broadcasts a new transaction to all known peers."""
     transaction_data = json.dumps(transaction.to_dict())
@@ -631,6 +673,7 @@ def broadcast_transaction(self, transaction):
         except Exception as e:
             logging.error(f"Failed to broadcast transaction to {peer}: {e}")
 
+
 def broadcast_block(self, block):
     """Broadcasts a new block to all known peers."""
     block_data = json.dumps(self.block_to_dict(block))
@@ -643,6 +686,7 @@ def broadcast_block(self, block):
                     logging.info(f"Broadcasted block to {peer}")
         except Exception as e:
             logging.error(f"Failed to broadcast block to {peer}: {e}")
+
 from concurrent.futures import ThreadPoolExecutor
 
 def validate_chain_in_parallel(self):
@@ -651,6 +695,7 @@ def validate_chain_in_parallel(self):
         # Validate blocks in parallel
         validation_results = executor.map(self.is_block_valid, self.chain[1:])
         return all(validation_results)
+
 class Blockchain:
     def __init__(self, difficulty=2, filename="blockchain.json"):
         # Existing initialization...
