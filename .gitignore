@@ -92,3 +92,24 @@ docker-compose.override.yml
 Pipfile
 Pipfile.lock
 poetry.lock
+# Log files
+*.log
+blockchain.log
+
+# SSL/TLS Certificates
+server.crt
+server.key
+
+# Database Files
+*.db
+*.sqlite3
+
+# Dependency Management
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Docker
+.dockerignore
+docker-compose.yml
+Dockerfile
