@@ -1,5 +1,3 @@
-# Full Integrated Blockchain Script with Improvements
-
 import hashlib
 import time
 import json
@@ -35,6 +33,24 @@ PORT = 5000
 BUFFER_SIZE = 4096
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", secrets.token_hex(16))
 
+# Utility Functions
+
+def establish_connection(peer, cafile="trusted-certs.pem"):
+    """
+    Establishes a secure SSL connection to a peer.
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_verify_locations(cafile=cafile)
+    try:
+        with socket.create_connection((peer.split(':')[0], int(peer.split(':')[1])), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=peer) as s:
+                return s
+    except (socket.error, ssl.SSLError) as e:
+        logging.error(f"Failed to connect to {peer}: {e}")
+        return None
+
 # Blockchain Implementation
 class Blockchain:
     def __init__(self, difficulty=2, filename="blockchain.json"):
@@ -51,20 +67,17 @@ class Blockchain:
         # Load blockchain from file if it exists
         self.load_chain()
 
-        # Initiate initial sync with peers
-        self.initial_sync()
-
-        # Start peer synchronization in a separate thread using the PeerSyncThread class
-        self.peer_sync_thread = PeerSyncThread(
-            self.peers, self.peer_lock, self.connect_to_blockchain
-        )
-        self.peer_sync_thread.start()
+        # Start peer synchronization and discovery threads
+        self.thread_manager = ThreadManager()
+        self.thread_manager.start_thread(PeerSyncThread, self.peers, self.peer_lock, self.connect_to_blockchain)
+        self.thread_manager.start_thread(PeerDiscoveryThread, self.peers, self.peer_lock, self.request_peers_from_peer)
 
     def create_genesis_block(self):
         return Block(0, "0", [], nonce=0)
 
     def get_latest_block(self):
         return self.chain[-1]
+
     def add_block(self, new_block):
         new_block.previous_hash = self.get_latest_block().hash
         new_block.mine_block(self.difficulty)
@@ -72,180 +85,57 @@ class Blockchain:
         logging.info(f"Block {new_block.index} added to chain with hash: {new_block.hash}")
         self.save_chain()
 
-    def verify_transaction(self, transaction):
-        """Verifies if a transaction is valid based on the sender's balance and signature, and prevents double-spending."""
-        sender_balance = self.balances.get(transaction.sender, 0)
-        
-        # Check if the transaction is already part of a confirmed block to prevent double-spending
-        for block in self.chain:
-            for tx in block.transactions:
-                if (tx.sender == transaction.sender and tx.amount == transaction.amount 
-                        and tx.receiver == transaction.receiver):
-                    logging.warning(f"Double-spending detected: Transaction from {transaction.sender} "
-                                    f"to {transaction.receiver} already exists.")
-                    return False
-
-        if sender_balance >= transaction.amount + transaction.fee and transaction.verify_signature(self.get_public_key(transaction.sender)):
-            return True
-        else:
-            logging.warning(f"Transaction from {transaction.sender} to {transaction.receiver} is invalid due to insufficient balance or invalid signature.")
-            return False
-
-    def add_transaction(self, transaction):
-        """Adds a transaction to the mempool after verifying it."""
-        if self.verify_transaction(transaction):
-            priority = (-transaction.fee, time.time(), transaction)  # Use fee and timestamp for prioritization
-            heapq.heappush(self.mempool, priority)
-            logging.info(f"Transaction {transaction} added to the mempool.")
-        else:
-            logging.warning(f"Transaction {transaction} was not added to the mempool due to verification failure.")
-
-    def mine_new_block(self):
-        """Selects transactions from the mempool and mines a new block."""
-        if not self.mempool:
-            logging.info("No transactions to mine.")
-            return
-
-        selected_transactions = []
-        while self.mempool and len(selected_transactions) < 10:
-            _, _, transaction = heapq.heappop(self.mempool)
-            selected_transactions.append(transaction)
-
-            # Deduct the amount and fee from the sender's balance
-            self.balances[transaction.sender] -= (transaction.amount + transaction.fee)
-
-            # Add the amount to the receiver's balance
-            self.balances[transaction.receiver] = self.balances.get(transaction.receiver, 0) + transaction.amount
-
-        # Create and mine a new block
-        new_block = Block(len(self.chain), self.get_latest_block().hash, selected_transactions)
-        new_block.mine_block(self.difficulty)
-        self.chain.append(new_block)
-        logging.info(f"Block {new_block.index} mined with hash: {new_block.hash}")
-        self.save_chain()
-
-    def initial_sync(self):
-        """Performs an initial synchronization with known peers to ensure the blockchain is up to date."""
-        logging.info("Starting initial sync process with known peers...")
-        longest_chain = self.chain
-        max_length = len(self.chain)
-
-        for peer in list(self.peers):
+    # Peer Interaction Methods
+    def request_peers_from_peer(self, peer):
+        """
+        Connects to a peer and requests their known peers to expand the peer list.
+        """
+        connection = establish_connection(peer)
+        if connection:
             try:
-                peer_chain = self.get_chain_from_peer(peer)
-                if len(peer_chain) > max_length and self.is_valid_chain(peer_chain):
-                    max_length = len(peer_chain)
-                    longest_chain = peer_chain
+                connection.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+                data = connection.recv(BUFFER_SIZE).decode()
+                received_peers = data.split(',')
+                for new_peer in received_peers:
+                    if new_peer not in self.peers and new_peer != peer:
+                        logging.info(f"Discovered new peer: {new_peer}")
+                        self.peers.add(new_peer)
             except Exception as e:
-                logging.error(f"Error retrieving chain from peer {peer} during initial sync: {e}")
+                logging.error(f"Failed to request peers from {peer}: {e}")
 
-        if longest_chain != self.chain:
-            logging.info("Replacing current chain with the longest valid chain found during initial sync.")
-            self.chain = longest_chain
-            self.save_chain()
-
-    def get_chain_from_peer(self, peer):
-        """Connects to a peer and retrieves their blockchain to check for a longer chain."""
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_REQUIRED
-        context.load_verify_locations(cafile="trusted-certs.pem")
-        with socket.create_connection((peer.split(':')[0], int(peer.split(':')[1])), timeout=10) as sock:
-            with context.wrap_socket(sock, server_hostname=peer) as s:
-                s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+    def connect_to_blockchain(self, host):
+        """
+        Connect to a peer's blockchain and sync if their chain is longer.
+        """
+        connection = establish_connection(host)
+        if connection:
+            try:
+                connection.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
                 data = b""
                 while True:
-                    part = s.recv(BUFFER_SIZE)
+                    part = connection.recv(BUFFER_SIZE)
                     if not part:
                         break
                     data += part
-                return [self.dict_to_block(block) for block in json.loads(data.decode())]
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
 
-    def connect_to_blockchain(self, host):
-        """Connect to a peer's blockchain and sync if their chain is longer."""
-        try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_REQUIRED
-            context.load_verify_locations(cafile="trusted-certs.pem")
-            with socket.create_connection((host.split(':')[0], int(host.split(':')[1])), timeout=10) as sock:
-                with context.wrap_socket(sock, server_hostname=host) as s:
-                    s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
-                    data = b""
-                    while True:
-                        part = s.recv(BUFFER_SIZE)
-                        if not part:
-                            break
-                        data += part
-                    received_chain = json.loads(data.decode())
-                    received_chain_objects = [self.dict_to_block(block) for block in received_chain]
-
-                    if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
-                        self.chain = received_chain_objects
-                        self.save_chain()
-                        logging.info("Replacing current blockchain with the received chain.")
-                    else:
-                        logging.info("Received blockchain is not valid or shorter. No update performed.")
-        except socket.error as e:
-            logging.error(f"Failed to connect to {host}:{PORT} - {e}")
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to decode blockchain JSON data from {host}:{PORT} - {e}")
-        except Exception as e:
-            logging.error(f"Unexpected error while connecting to blockchain: {e}")
-
-    def resolve_conflicts(self):
-        """Implements a consensus algorithm to resolve conflicts by adopting the chain with the highest cumulative proof-of-work."""
-        logging.info("Resolving chain conflicts...")
-        best_chain = self.chain
-        best_cumulative_difficulty = self.calculate_cumulative_difficulty(self.chain)
-
-        for peer in list(self.peers):
-            try:
-                peer_chain = self.get_chain_from_peer(peer)
-                if self.is_valid_chain(peer_chain):
-                    peer_cumulative_difficulty = self.calculate_cumulative_difficulty(peer_chain)
-                    if peer_cumulative_difficulty > best_cumulative_difficulty:
-                        best_chain = peer_chain
-                        best_cumulative_difficulty = peer_cumulative_difficulty
+                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                    logging.info("Replacing current blockchain with the received chain.")
+                else:
+                    logging.info("Received blockchain is not valid or shorter. No update performed.")
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to decode blockchain JSON data from {host}: {e}")
             except Exception as e:
-                logging.error(f"Error retrieving chain from peer {peer}: {e}")
+                logging.error(f"Unexpected error while connecting to blockchain: {e}")
 
-        if best_chain != self.chain:
-            logging.info("Replacing current chain with the chain with the highest cumulative proof-of-work.")
-            self.chain = best_chain
-            self.save_chain()
-
-    def calculate_cumulative_difficulty(self, chain):
-        """Calculates the cumulative difficulty for a given chain based on the block difficulty."""
-        return sum(block.difficulty for block in chain)
-
-    def save_chain(self):
-        """Saves the blockchain to a JSON file to ensure persistence."""
-        try:
-            with open(self.filename, "w") as f:
-                json.dump([self.block_to_dict(block) for block in self.chain], f, indent=4)
-            logging.info("Blockchain saved successfully.")
-        except (IOError, Exception) as e:
-            logging.error(f"Failed to save blockchain to file: {e}")
-
-    def load_chain(self):
-        """Loads the blockchain from a JSON file if it exists."""
-        try:
-            with open(self.filename, "r") as f:
-                data = json.load(f)
-                self.chain = [self.dict_to_block(block_data) for block_data in data]
-            logging.info("Blockchain loaded successfully.")
-        except FileNotFoundError:
-            logging.warning(f"No blockchain file found at {self.filename}. Starting with the genesis block.")
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to decode JSON while loading blockchain: {e}")
-        except IOError as e:
-            logging.error(f"Failed to load blockchain from file: {e}")
-        except Exception as e:
-            logging.error(f"Unexpected error while loading blockchain: {e}")
-
+    # Blockchain Validation
     def is_valid_chain(self, chain):
-        """Validates the entire blockchain by verifying hashes, previous hashes, and transaction signatures."""
+        """
+        Validates the entire blockchain by verifying hashes, previous hashes, and transaction signatures.
+        """
         for i in range(1, len(chain)):
             current_block = chain[i]
             previous_block = chain[i - 1]
@@ -266,490 +156,57 @@ class Blockchain:
                     logging.error(f"Invalid signature for transaction {transaction}")
                     return False
 
+        logging.info("Chain validated successfully.")
         return True
 
-    def block_to_dict(self, block):
-        """Converts a block to a dictionary representation for easy JSON serialization."""
-        return {
-            "index": block.index,
-            "previous_hash": block.previous_hash,
-            "transactions": [tx.to_dict() for tx in block.transactions],
-            "timestamp": block.timestamp,
-            "nonce": block.nonce,
-            "merkle_root": getattr(block, 'merkle_root', None),
-            "hash": block.hash
-        }
-
-    def dict_to_block(self, block_dict):
-        """Converts a dictionary representation back to a Block object."""
-        transactions = [Transaction(**tx) for tx in block_dict["transactions"]]
-        block = Block(block_dict["index"], block_dict["previous_hash"], transactions,
-                      block_dict["timestamp"], block_dict["nonce"])
-        block.hash = block_dict["hash"]
-        return block
-
-    def get_public_key(self, public_key_pem):
-        """Deserializes a public key from PEM format to use it for transaction verification."""
+    # Blockchain Persistence
+    def save_chain(self):
+        """
+        Saves the blockchain to a JSON file to ensure persistence.
+        """
         try:
-            return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
-        except ValueError as e:
-            logging.error(f"Failed to load public key: {e}")
-            raise
+            with open(self.filename, "w") as f:
+                json.dump([self.block_to_dict(block) for block in self.chain], f, indent=4)
+            logging.info("Blockchain saved successfully.")
+        except (IOError, Exception) as e:
+            logging.error(f"Failed to save blockchain to file: {e}")
 
-    def handle_peer_request(self, ip, command):
-        """Handles requests from peers, enforcing rate limits to prevent abuse."""
-        if self.rate_limiter.is_rate_limited(ip, command):
-            return "RATE_LIMIT_EXCEEDED"
-
-        # Handle the command as required (implementation could go here)
-        return "COMMAND_HANDLED"
-
-    def add_peer(self, peer):
-        """Adds a peer to the peer set, ensuring no duplicate entries."""
-        with self.peer_lock:
-            if peer not in self.peers:
-                self.peers.add(peer)
-                logging.info(f"Peer {peer} added successfully.")
-
-    def peer_discovery(self):
-        """Handles the peer discovery process periodically to expand the network."""
-        logging.info("Peer discovery process started...")
-        while True:
-            if len(self.peers) > 0:
-                with self.peer_lock:
-                    selected_peer = random.choice(list(self.peers))
-                self.request_peers_from_peer(selected_peer)
-            time.sleep(60 + random.uniform(-5, 5))  # Adding some randomness to avoid synchronization issues
-
-    def request_peers_from_peer(self, peer):
-        """Requests known peers from another peer to enhance network connectivity."""
+    def load_chain(self):
+        """
+        Loads the blockchain from a JSON file if it exists.
+        """
         try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            with socket.create_connection((peer.split(':')[0], int(peer.split(':')[1])), timeout=10) as sock:
-                with context.wrap_socket(sock, server_hostname=peer) as s:
-                    s.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
-                    data = s.recv(BUFFER_SIZE).decode()
-                    received_peers = data.split(',')
-                    for new_peer in received_peers:
-                        if new_peer not in self.peers and new_peer != peer:
-                            logging.info(f"Discovered new peer: {new_peer}")
-                            self.peers.add(new_peer)
-        except (socket.error, ssl.SSLError) as e:
-            logging.error(f"Failed to request peers from {peer}: {e}")
+            with open(self.filename, "r") as f:
+                data = json.load(f)
+                self.chain = [self.dict_to_block(block_data) for block_data in data]
+            logging.info("Blockchain loaded successfully.")
+        except FileNotFoundError:
+            logging.warning(f"No blockchain file found at {self.filename}. Starting with the genesis block.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode JSON while loading blockchain: {e}")
+        except IOError as e:
+            logging.error(f"Failed to load blockchain from file: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error while loading blockchain: {e}")
 
-    def stop_peer_discovery(self):
-        """Stops the peer discovery process gracefully."""
-        logging.info("Stopping peer discovery process...")
-
-class Transaction:
-    """Base class representing a transaction in the blockchain."""
-
-    def __init__(self, sender, receiver, amount, fee=0, tx_type="standard", private_key=None, metadata=None):
-        self.sender = sender
-        self.receiver = receiver
-        self.amount = amount
-        self.fee = fee
-        self.tx_type = tx_type
-        self.metadata = metadata or {}
-        self.signature = None
-
-        # Automatically sign the transaction if a private key is provided
-        if private_key:
-            self.sign_transaction(private_key)
-
-    def __repr__(self):
-        return f"{self.tx_type.capitalize()}Transaction({self.sender} -> {self.receiver}: {self.amount}, Fee: {self.fee})"
-
-    def to_dict(self):
-        """Converts the transaction to a dictionary representation."""
-        return {
-            "sender": self.sender,
-            "receiver": self.receiver,
-            "amount": self.amount,
-            "fee": self.fee,
-            "tx_type": self.tx_type,
-            "metadata": self.metadata,
-            "signature": self.signature.hex() if self.signature else None
-        }
-
-    def sign_transaction(self, private_key):
-        """Signs the transaction using the sender's private key."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        self.signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
-
-    def verify_signature(self, public_key):
-        """Verifies the transaction's signature."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        try:
-            public_key.verify(self.signature, transaction_data, ec.ECDSA(hashes.SHA256()))
-            return True
-        except InvalidSignature:
-            logging.warning(f"Invalid signature for {self.tx_type} transaction from {self.sender} to {self.receiver}.")
-            return False
-
-
-class Block:
-    """Represents a block in the blockchain."""
-
-    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0):
-        self.index = index
-        self.previous_hash = previous_hash
-        self.transactions = transactions
-        self.timestamp = timestamp or int(time.time())
-        self.nonce = nonce
-        self.merkle_root = MerkleTree(transactions).root
-        self.hash = self.calculate_hash()
-
-    def calculate_hash(self):
-        """Calculates the SHA-512 hash of the block."""
-        block_string = f"{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}".encode()
-        return hashlib.sha512(block_string).hexdigest()
-
-    def mine_block(self, difficulty, callback=None):
-        """Mines the block by finding a hash that meets the difficulty target."""
-        target = "0" * difficulty
-        while self.hash[:difficulty] != target:
-            self.nonce += 1
-            self.hash = self.calculate_hash()
-
-        # If a callback is provided, call it once the block is mined
-        if callback:
-            callback(self)
-
-
-class MerkleTree:
-    """Constructs a Merkle Tree from a list of transactions."""
-
-    def __init__(self, transactions):
-        self.transactions = transactions
-        self.root = self.build_tree([self.hash_data(str(tx)) for tx in transactions])
-
-    @staticmethod
-    def hash_data(data):
-        """Hashes the given data using SHA-512."""
-        return hashlib.sha512(data.encode()).digest()
-
-    def build_tree(self, leaves):
-        """Builds the Merkle Tree iteratively from the leaves."""
-        while len(leaves) > 1:
-            if len(leaves) % 2 == 1:
-                leaves.append(leaves[-1][:])  # Make a copy to avoid reference issues
-            parent_layer = [self.hash_data(leaves[i] + leaves[i + 1]) for i in range(0, len(leaves), 2)]
-            leaves = parent_layer
-        return leaves[0] if leaves else None
-
-
-class PeerDiscoveryThread(threading.Thread):
-    """
-    Thread to handle peer discovery in the blockchain network.
-    """
-    def __init__(self, peers, peer_lock, request_peers_callback):
-        super(PeerDiscoveryThread, self).__init__()
-        self.peers = peers
-        self.peer_lock = peer_lock
-        self.request_peers_callback = request_peers_callback
-        self.daemon = True  # Ensure thread exits when main program ends
-        self.stop_event = threading.Event()  # To allow graceful stopping
-
-    def run(self):
-        logging.info("Peer discovery thread started...")
-        while not self.stop_event.is_set():
-            if len(self.peers) > 0:
-                with self.peer_lock:
-                    selected_peer = random.choice(list(self.peers))
-                self.request_peers_callback(selected_peer)
-            time.sleep(60 + random.uniform(-5, 5))  # Adding some randomness to avoid synchronization issues
-
-    def stop(self):
-        """Stops the peer discovery thread gracefully."""
-        self.stop_event.set()
-
-
-class PeerSyncThread(threading.Thread):
-    """
-    Thread to handle synchronization with peer blockchains in the network.
-    """
-    def __init__(self, peers, peer_lock, connect_to_blockchain_callback):
-        super(PeerSyncThread, self).__init__()
-        self.peers = peers
-        self.peer_lock = peer_lock
-        self.connect_to_blockchain_callback = connect_to_blockchain_callback
-        self.daemon = True  # Ensure thread exits when main program ends
-        self.stop_event = threading.Event()  # To allow graceful stopping
-
-    def run(self):
-        logging.info("Peer sync thread started...")
-        while not self.stop_event.is_set():
-            if len(self.peers) > 0:
-                with self.peer_lock:
-                    selected_peer = random.choice(list(self.peers))
-                self.connect_to_blockchain_callback(selected_peer)
-            time.sleep(30)  # Sync every 30 seconds
-
-    def stop(self):
-        """Stops the peer sync thread gracefully."""
-        self.stop_event.set()
-
-class RateLimiter:
-    """
-    Implements a rate-limiting mechanism for requests to prevent abuse and ensure network fairness.
-    """
-    RATE_LIMIT_WINDOW = timedelta(seconds=10)  # Rate limiting window
-    MAX_REQUESTS_PER_WINDOW = 5
-
+# Thread Management
+class ThreadManager:
     def __init__(self):
-        self.rate_limit_tracker = defaultdict(lambda: defaultdict(list))
+        self.threads = []
 
-    def is_rate_limited(self, ip, command):
-        """
-        Checks whether the rate limit for a specific IP address and command has been exceeded.
-        """
-        current_time = datetime.now()
-        request_times = self.rate_limit_tracker[ip][command]
+    def start_thread(self, thread_class, *args, **kwargs):
+        thread = thread_class(*args, **kwargs)
+        thread.start()
+        self.threads.append(thread)
+        logging.info(f"Started thread: {thread_class.__name__}")
 
-        # Remove outdated requests
-        self.rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < self.RATE_LIMIT_WINDOW]
+    def stop_all_threads(self):
+        for thread in self.threads:
+            thread.stop()
+        logging.info("All threads stopped.")
 
-        # Check if the request limit has been exceeded
-        if len(self.rate_limit_tracker[ip][command]) >= self.MAX_REQUESTS_PER_WINDOW:
-            logging.warning(f"Rate limit exceeded for {ip} on command {command}.")
-            return True
-
-        # Add the current request to the list
-        self.rate_limit_tracker[ip][command].append(current_time)
-        return False
-
-
-# Adding Utility Methods to Blockchain Class
-class Blockchain:
-    def __init__(self, difficulty=2, filename="blockchain.json"):
-        self.chain = [self.create_genesis_block()]
-        self.difficulty = difficulty
-        self.filename = filename
-        self.block_times = []  # Track mining times for blocks
-        self.peers = set()  # Set of known peer addresses
-        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
-        self.peer_lock = threading.Lock()  # Synchronization lock for peer discovery
-        self.rate_limiter = RateLimiter()  # Initialize rate limiter for request management
-
-        # Load blockchain from file if it exists
-        self.load_chain()
-
-        # Initiate initial sync with peers
-        self.initial_sync()
-
-        # Start peer synchronization in a separate thread using the PeerSyncThread class
-        self.peer_sync_thread = PeerSyncThread(
-            self.peers, self.peer_lock, self.connect_to_blockchain
-        )
-        self.peer_sync_thread.start()
-
-    def stop_peer_sync(self):
-        """Stops the peer synchronization process gracefully."""
-        self.peer_sync_thread.stop()
-
-    def create_genesis_block(self):
-        """Creates the first block in the blockchain."""
-        return Block(0, "0", [], nonce=0)
-
-    def handle_peer_request(self, ip, command):
-        """Handles a peer request, enforcing rate limits to prevent abuse."""
-        if self.rate_limiter.is_rate_limited(ip, command):
-            return "RATE_LIMIT_EXCEEDED"
-
-        # Handle the command normally
-        # (implementation goes here)
-        return "COMMAND_HANDLED"
-
-    def adjust_difficulty(self):
-        """Adjusts the mining difficulty based on the average block time."""
-        if len(self.block_times) >= 10:
-            avg_mining_duration = sum(self.block_times[-10:]) / 10
-            target_duration = 180  # Target block time in seconds
-            lower_bound = 150  # Lower acceptable bound
-            upper_bound = 210  # Upper acceptable bound
-
-            if avg_mining_duration < lower_bound:
-                self.difficulty += 1
-            elif avg_mining_duration > upper_bound:
-                self.difficulty = max(1, self.difficulty - 1)
-            else:
-                adjustment_factor = avg_mining_duration / target_duration
-                if adjustment_factor < 0.95:
-                    self.difficulty = int(self.difficulty * 0.98)
-                elif adjustment_factor > 1.05:
-                    self.difficulty = max(1, int(self.difficulty / 1.02))
-
-            logging.info(f"Adjusted mining difficulty to {self.difficulty}.")
-
-    def is_valid_chain(self, chain):
-        """Check if a given chain is valid by verifying hashes, previous hashes, and transaction signatures."""
-        for i in range(1, len(chain)):
-            current_block = chain[i]
-            previous_block = chain[i - 1]
-            if current_block.hash != current_block.calculate_hash():
-                logging.error(f"Invalid block at index {i}: hash mismatch.")
-                return False
-            if current_block.previous_hash != previous_block.hash:
-                logging.error(f"Invalid block at index {i}: previous hash mismatch.")
-                return False
-            # Verify all transactions within the block
-            for transaction in current_block.transactions:
-                if not transaction.verify_signature(self.get_public_key(transaction.sender)):
-                    logging.error(f"Invalid signature for transaction {transaction}")
-                    return False
-        return True
-
-    def cleanup_mempool(self):
-        """Cleans up the mempool by removing invalid or expired transactions."""
-        current_time = time.time()
-        valid_transactions = []
-
-        for _, _, transaction in self.mempool:
-            # Check if the transaction is still valid (e.g., timestamp is within acceptable range)
-            if transaction.timestamp > current_time - 3600:  # 1-hour validity
-                valid_transactions.append((_, _, transaction))
-
-        self.mempool = valid_transactions  # Update mempool with valid transactions
-
-
-# Block-to-Dictionary and Dictionary-to-Block Utilities
-    @staticmethod
-    def block_to_dict(block):
-        """Converts a block to a dictionary representation."""
-        return {
-            "index": block.index,
-            "previous_hash": block.previous_hash,
-            "transactions": [tx.to_dict() for tx in block.transactions],
-            "timestamp": block.timestamp,
-            "nonce": block.nonce,
-            "merkle_root": getattr(block, 'merkle_root', None),
-            "hash": block.hash
-        }
-
-    def dict_to_block(self, block_dict):
-        """Converts a dictionary representation back to a block."""
-        transactions = [Transaction(**tx) for tx in block_dict["transactions"]]
-        block = Block(block_dict["index"], block_dict["previous_hash"], transactions,
-                      block_dict["timestamp"], block_dict["nonce"])
-        block.hash = block_dict["hash"]
-        return block
-
-    def get_public_key(self, public_key_pem):
-        """Deserializes a public key from PEM format."""
-        try:
-            return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
-        except ValueError as e:
-            logging.error(f"Failed to load public key: {e}")
-            raise
-
-class Transaction:
-    """Base class representing a transaction in the blockchain."""
-
-    def __init__(self, sender, receiver, amount, fee=0, tx_type="standard", private_key=None, metadata=None):
-        self.sender = sender
-        self.receiver = receiver
-        self.amount = amount
-        self.fee = fee  # Transaction fee
-        self.tx_type = tx_type  # Defines the transaction type (standard, contract, asset, etc.)
-        self.metadata = metadata or {}  # Optional metadata for additional information
-        self.timestamp = time.time()  # Timestamp for when the transaction is created
-        self.signature = None
-
-        # Auto-sign the transaction if a private key is provided
-        if private_key:
-            self.sign_transaction(private_key)
-
-    def __repr__(self):
-        return f"{self.tx_type.capitalize()}Transaction({self.sender} -> {self.receiver}: {self.amount}, Fee: {self.fee})"
-
-    def to_dict(self):
-        """Converts the transaction to a dictionary representation."""
-        return {
-            "sender": self.sender,
-            "receiver": self.receiver,
-            "amount": self.amount,
-            "fee": self.fee,
-            "tx_type": self.tx_type,
-            "metadata": self.metadata,
-            "timestamp": self.timestamp,
-            "signature": self.signature.hex() if self.signature else None
-        }
-
-    def sign_transaction(self, private_key):
-        """Signs the transaction using the sender's private key."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        self.signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
-
-    def verify_signature(self, public_key):
-        """Verifies the transaction signature."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        try:
-            public_key.verify(self.signature, transaction_data, ec.ECDSA(hashes.SHA256()))
-            return True
-        except InvalidSignature:
-            logging.warning(f"Invalid signature for {self.tx_type} transaction from {self.sender} to {self.receiver}.")
-            return False
-
-
-class Block:
-    """Represents a block in the blockchain."""
-
-    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0):
-        self.index = index
-        self.previous_hash = previous_hash
-        self.transactions = transactions
-        self.timestamp = timestamp or int(time.time())
-        self.nonce = nonce
-        self.merkle_root = MerkleTree(transactions).root
-        self.hash = self.calculate_hash()
-        self.difficulty = 0  # Track the difficulty of the mined block
-
-    def calculate_hash(self):
-        """Calculates the SHA-512 hash of the block."""
-        block_string = f"{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}".encode()
-        return hashlib.sha512(block_string).hexdigest()
-
-    def mine_block(self, difficulty):
-        """Mines the block by finding a hash that meets the difficulty target."""
-        target = "0" * difficulty
-        while self.hash[:difficulty] != target:
-            self.nonce += 1
-            self.hash = self.calculate_hash()
-        self.difficulty = difficulty  # Assign the difficulty level used for mining
-        logging.info(f"Block {self.index} mined with nonce: {self.nonce} and hash: {self.hash}")
-
-
-class MerkleTree:
-    """Constructs a Merkle Tree from a list of transactions."""
-
-    def __init__(self, transactions):
-        self.transactions = transactions
-        self.root = self.build_tree([self.hash_data(str(tx)) for tx in transactions])
-
-    @staticmethod
-    def hash_data(data):
-        """Hashes the given data using SHA-512."""
-        return hashlib.sha512(data.encode()).digest()
-
-    def build_tree(self, leaves):
-        """Builds the Merkle Tree iteratively from the leaves."""
-        while len(leaves) > 1:
-            if len(leaves) % 2 == 1:
-                leaves.append(leaves[-1][:])  # Make a copy to avoid reference issues
-            parent_layer = [self.hash_data(leaves[i] + leaves[i + 1]) for i in range(0, len(leaves), 2)]
-            leaves = parent_layer
-        return leaves[0] if leaves else None
-
-
-# Adding the PeerSyncThread Class for Peer Synchronization
+# Peer Synchronization Thread
 class PeerSyncThread(threading.Thread):
-    """
-    Thread to handle synchronization with peer blockchains in the network.
-    """
-
     def __init__(self, peers, peer_lock, connect_to_blockchain_callback):
         super(PeerSyncThread, self).__init__()
         self.peers = peers
@@ -768,15 +225,32 @@ class PeerSyncThread(threading.Thread):
             time.sleep(30)  # Sync every 30 seconds for now
 
     def stop(self):
-        """Stops the peer sync thread gracefully."""
         self.stop_event.set()
 
-# Rate Limiter Class for Preventing Abuse
+# Peer Discovery Thread
+class PeerDiscoveryThread(threading.Thread):
+    def __init__(self, peers, peer_lock, request_peers_callback):
+        super(PeerDiscoveryThread, self).__init__()
+        self.peers = peers
+        self.peer_lock = peer_lock
+        self.request_peers_callback = request_peers_callback
+        self.daemon = True  # Ensure thread exits when main program ends
+        self.stop_event = threading.Event()  # To allow graceful stopping
+
+    def run(self):
+        logging.info("Peer discovery thread started...")
+        while not self.stop_event.is_set():
+            if len(self.peers) > 0:
+                with self.peer_lock:
+                    selected_peer = random.choice(list(self.peers))
+                self.request_peers_callback(selected_peer)
+            time.sleep(60 + random.uniform(-5, 5))  # Adding some randomness to avoid synchronization issues
+
+    def stop(self):
+        self.stop_event.set()
+# Rate Limiter for Preventing Abuse
 class RateLimiter:
-    """
-    Implements a rate-limiting mechanism for requests to prevent abuse and ensure network fairness.
-    """
-    RATE_LIMIT_WINDOW = timedelta(seconds=10)  # Rate limiting window
+    RATE_LIMIT_WINDOW = timedelta(seconds=10)
     MAX_REQUESTS_PER_WINDOW = 5
 
     def __init__(self):
@@ -784,7 +258,8 @@ class RateLimiter:
 
     def is_rate_limited(self, ip, command):
         """
-        Checks whether the rate limit for a specific IP address and command has been exceeded.
+        Checks if the specified IP address has exceeded the maximum number of requests for a given command
+        within the defined rate limit window.
         """
         current_time = datetime.now()
         request_times = self.rate_limit_tracker[ip][command]
@@ -801,312 +276,8 @@ class RateLimiter:
         self.rate_limit_tracker[ip][command].append(current_time)
         return False
 
-
-class Blockchain:
-    """
-    Represents the blockchain itself, managing the chain of blocks.
-    """
-    def __init__(self, difficulty=2, filename="blockchain.json"):
-        self.chain = [self.create_genesis_block()]
-        self.difficulty = difficulty
-        self.filename = filename
-        self.block_times = []  # Track mining times for blocks
-        self.peers = set()  # Set of known peer addresses
-        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
-        self.peer_lock = threading.Lock()  # Synchronization lock for peer discovery
-        self.rate_limiter = RateLimiter()  # Initialize rate limiter for request management
-
-        # Load blockchain from file if it exists
-        self.load_chain()
-
-        # Initiate initial sync with peers
-        self.initial_sync()
-
-        # Start peer synchronization in a separate thread using the PeerSyncThread class
-        self.peer_sync_thread = PeerSyncThread(
-            self.peers, self.peer_lock, self.connect_to_blockchain
-        )
-        self.peer_sync_thread.start()
-
-    def stop_peer_sync(self):
-        """Stops the peer synchronization process gracefully."""
-        self.peer_sync_thread.stop()
-
-    def create_genesis_block(self):
-        """Creates the first block in the blockchain."""
-        return Block(0, "0", [], nonce=0)
-
-    def dict_to_block(self, block_dict):
-        """Converts a dictionary representation back to a block."""
-        transactions = [Transaction(**tx) for tx in block_dict["transactions"]]
-        block = Block(block_dict["index"], block_dict["previous_hash"], transactions,
-                      block_dict["timestamp"], block_dict["nonce"])
-        block.hash = block_dict["hash"]
-        block.difficulty = block_dict.get("difficulty", 0)
-        return block
-
-    def block_to_dict(self, block):
-        """Converts a block to a dictionary representation."""
-        return {
-            "index": block.index,
-            "previous_hash": block.previous_hash,
-            "transactions": [tx.to_dict() for tx in block.transactions],
-            "timestamp": block.timestamp,
-            "nonce": block.nonce,
-            "merkle_root": getattr(block, 'merkle_root', None),
-            "hash": block.hash,
-            "difficulty": block.difficulty
-        }
-
-    def is_valid_chain(self, chain):
-        """Validates the entire blockchain by verifying hashes, previous hashes, and transaction signatures."""
-        for i in range(1, len(chain)):
-            current_block = chain[i]
-            previous_block = chain[i - 1]
-
-            # Check if current block hash is correct
-            if current_block.hash != current_block.calculate_hash():
-                logging.error(f"Invalid block at index {i}: hash mismatch.")
-                return False
-
-            # Ensure the current block's `previous_hash` matches the previous block's hash
-            if current_block.previous_hash != previous_block.hash:
-                logging.error(f"Invalid block at index {i}: previous hash mismatch.")
-                return False
-
-            # Verify all transactions within the block
-            for transaction in current_block.transactions:
-                if not transaction.verify_signature(self.get_public_key(transaction.sender)):
-                    logging.error(f"Invalid signature for transaction {transaction}")
-                    return False
-
-        logging.info("Chain validated successfully.")
-        return True
-
-    def get_public_key(self, public_key_pem):
-        """Deserializes a public key from PEM format."""
-        try:
-            return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
-        except ValueError as e:
-            logging.error(f"Failed to load public key: {e}")
-            raise
-
-    def cleanup_mempool(self):
-        """Cleans up the mempool by removing invalid or expired transactions."""
-        current_time = time.time()
-        valid_transactions = []
-
-        for _, _, transaction in self.mempool:
-            # Check if the transaction is still valid (e.g., timestamp is within acceptable range)
-            if transaction.timestamp > current_time - 3600:  # 1-hour validity
-                valid_transactions.append((_, _, transaction))
-
-        self.mempool = valid_transactions  # Update mempool with valid transactions
-
-    def save_chain(self):
-        """Saves the blockchain to a JSON file."""
-        try:
-            with open(self.filename, "w") as f:
-                json.dump([self.block_to_dict(block) for block in self.chain], f, indent=4)
-            logging.info("Blockchain saved successfully.")
-        except (IOError, Exception) as e:
-            logging.error(f"Failed to save blockchain to file: {e}")
-
-    def load_chain(self):
-        """Loads the blockchain from a JSON file."""
-        try:
-            with open(self.filename, "r") as f:
-                data = json.load(f)
-                self.chain = [self.dict_to_block(block_data) for block_data in data]
-            logging.info("Blockchain loaded successfully.")
-        except FileNotFoundError:
-            logging.warning(f"No blockchain file found at {self.filename}. Starting with the genesis block.")
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to decode JSON while loading blockchain: {e}")
-        except IOError as e:
-            logging.error(f"Failed to load blockchain from file: {e}")
-        except Exception as e:
-            logging.error(f"Unexpected error while loading blockchain: {e}")
-
-# Block Class representing a Block in the Blockchain
-class Block:
-    """
-    Represents a block in the blockchain.
-    """
-    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0):
-        self.index = index
-        self.previous_hash = previous_hash
-        self.transactions = transactions
-        self.timestamp = timestamp or int(time.time())
-        self.nonce = nonce
-        self.merkle_root = MerkleTree(transactions).root
-        self.hash = self.calculate_hash()
-        self.difficulty = 1  # Default difficulty for PoW
-
-    def calculate_hash(self):
-        """Calculates the SHA-512 hash of the block."""
-        block_string = f"{self.index}{self.previous_hash}{self.merkle_root}{self.timestamp}{self.nonce}".encode()
-        return hashlib.sha512(block_string).hexdigest()
-
-    def mine_block(self, difficulty):
-        """Mines the block by finding a hash that meets the difficulty target."""
-        target = "0" * difficulty
-        while self.hash[:difficulty] != target:
-            self.nonce += 1
-            self.hash = self.calculate_hash()
-
-        logging.info(f"Block {self.index} mined: {self.hash}")
-
-
-# Merkle Tree Class to handle Transactions' Merkle Root Calculation
-class MerkleTree:
-    """
-    Constructs a Merkle Tree from a list of transactions.
-    """
-    def __init__(self, transactions):
-        self.transactions = transactions
-        self.root = self.build_tree([self.hash_data(str(tx)) for tx in transactions])
-
-    @staticmethod
-    def hash_data(data):
-        """Hashes the given data using SHA-512."""
-        return hashlib.sha512(data.encode()).digest()
-
-    def build_tree(self, leaves):
-        """Builds the Merkle Tree iteratively from the leaves."""
-        while len(leaves) > 1:
-            if len(leaves) % 2 == 1:
-                leaves.append(leaves[-1][:])  # Make a copy to avoid reference issues
-            parent_layer = [self.hash_data(leaves[i] + leaves[i + 1]) for i in range(0, len(leaves), 2)]
-            leaves = parent_layer
-        return leaves[0] if leaves else None
-
-
-# Transaction Classes
-
-class Transaction:
-    """
-    Base class representing a transaction in the blockchain.
-    """
-    def __init__(self, sender, receiver, amount, fee=0, tx_type="standard", private_key=None, metadata=None):
-        self.sender = sender
-        self.receiver = receiver
-        self.amount = amount
-        self.fee = fee
-        self.tx_type = tx_type  # Defines the transaction type (standard, contract, asset, etc.)
-        self.metadata = metadata or {}  # Optional metadata for additional information
-        self.signature = None
-        self.timestamp = time.time()  # Add a timestamp for transaction validity checks
-
-        # Auto-sign the transaction if a private key is provided
-        if private_key:
-            self.sign_transaction(private_key)
-
-    def __repr__(self):
-        return f"{self.tx_type.capitalize()}Transaction({self.sender} -> {self.receiver}: {self.amount}, Fee: {self.fee})"
-
-    def to_dict(self):
-        """Converts the transaction to a dictionary representation."""
-        return {
-            "sender": self.sender,
-            "receiver": self.receiver,
-            "amount": self.amount,
-            "fee": self.fee,
-            "tx_type": self.tx_type,
-            "metadata": self.metadata,
-            "signature": self.signature.hex() if self.signature else None,
-            "timestamp": self.timestamp
-        }
-
-    def sign_transaction(self, private_key):
-        """Signs the transaction using the sender's private key."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        self.signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
-
-    def verify_signature(self, public_key):
-        """Verifies the transaction signature."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}{self.fee}{self.tx_type}{json.dumps(self.metadata)}".encode()
-        try:
-            public_key.verify(self.signature, transaction_data, ec.ECDSA(hashes.SHA256()))
-            return True
-        except InvalidSignature:
-            logging.warning(f"Invalid signature for {self.tx_type} transaction from {self.sender} to {self.receiver}.")
-            return False
-
-
-# MultiSigTransaction Class for Multisignature Transactions
-class MultiSigTransaction(Transaction):
-    """
-    Represents a multi-signature transaction in the blockchain.
-    """
-    def __init__(self, sender, receiver, amount, required_signatures=2):
-        super().__init__(sender, receiver, amount, tx_type="multisig")
-        self.required_signatures = required_signatures
-        self.signatures = []
-
-    def sign_transaction(self, private_key):
-        """Adds a signature from a private key."""
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
-        signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
-        self.signatures.append(signature)
-
-    def verify_signatures(self, public_keys):
-        """Verifies that the transaction has the required number of valid signatures."""
-        if len(self.signatures) < self.required_signatures:
-            return False
-
-        valid_signatures = 0
-        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
-
-        for public_key, signature in zip(public_keys, self.signatures):
-            try:
-                public_key.verify(signature, transaction_data, ec.ECDSA(hashes.SHA256()))
-                valid_signatures += 1
-            except InvalidSignature:
-                continue
-
-            if valid_signatures >= self.required_signatures:
-                return True
-
-        return False
-
-import datetime
-from collections import defaultdict
-
-class RateLimiter:
-    """
-    Implements a rate-limiting mechanism for requests to prevent abuse and ensure network fairness.
-    """
-    RATE_LIMIT_WINDOW = datetime.timedelta(seconds=10)  # Rate limiting window
-    MAX_REQUESTS_PER_WINDOW = 5
-
-    def __init__(self):
-        self.rate_limit_tracker = defaultdict(lambda: defaultdict(list))
-
-    def is_rate_limited(self, ip, command):
-        """
-        Checks whether the rate limit for a specific IP address and command has been exceeded.
-        """
-        current_time = datetime.datetime.now()
-        request_times = self.rate_limit_tracker[ip][command]
-
-        # Remove outdated requests
-        self.rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < self.RATE_LIMIT_WINDOW]
-
-        # Check if the request limit has been exceeded
-        if len(self.rate_limit_tracker[ip][command]) >= self.MAX_REQUESTS_PER_WINDOW:
-            logging.warning(f"Rate limit exceeded for {ip} on command {command}.")
-            return True
-
-        # Add the current request to the list
-        self.rate_limit_tracker[ip][command].append(current_time)
-        return False
-
-
+# Peer Synchronization Thread
 class PeerSyncThread(threading.Thread):
-    """
-    Thread to handle synchronization with peer blockchains in the network.
-    """
     def __init__(self, peers, peer_lock, connect_to_blockchain_callback):
         super(PeerSyncThread, self).__init__()
         self.peers = peers
@@ -1132,9 +303,6 @@ class PeerSyncThread(threading.Thread):
 
 # Peer Discovery Thread
 class PeerDiscoveryThread(threading.Thread):
-    """
-    Thread to handle peer discovery in the blockchain network.
-    """
     def __init__(self, peers, peer_lock, request_peers_callback):
         super(PeerDiscoveryThread, self).__init__()
         self.peers = peers
@@ -1157,7 +325,6 @@ class PeerDiscoveryThread(threading.Thread):
         Stops the peer discovery thread gracefully.
         """
         self.stop_event.set()
-
 
 # Integrating PeerSyncThread and PeerDiscoveryThread into Blockchain
 class Blockchain:
@@ -1200,28 +367,747 @@ class Blockchain:
         Connects to a peer and requests their known peers to expand the peer list.
         """
         try:
+            connection = establish_connection(peer)
+            if connection:
+                connection.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+                data = connection.recv(BUFFER_SIZE).decode()
+                received_peers = data.split(',')
+                for new_peer in received_peers:
+                    if new_peer not in self.peers and new_peer != peer:
+                        logging.info(f"Discovered new peer: {new_peer}")
+                        self.peers.add(new_peer)
+        except (socket.error, ssl.SSLError) as e:
+            logging.error(f"Failed to request peers from {peer}: {e}")
+
+    def connect_to_blockchain(self, host):
+        """
+        Connect to a peer's blockchain and sync if their chain is longer.
+        """
+        try:
+            connection = establish_connection(host)
+            if connection:
+                connection.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                data = b""
+                while True:
+                    part = connection.recv(BUFFER_SIZE)
+                    if not part:
+                        break
+                    data += part
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+
+                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                    logging.info("Replacing current blockchain with the received chain.")
+                else:
+                    logging.info("Received blockchain is not valid or shorter. No update performed.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode blockchain JSON data from {host}: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error while connecting to blockchain: {e}")
+
+    def create_genesis_block(self):
+        """
+        Creates the first block in the blockchain.
+        """
+        return Block(0, "0", [], nonce=0)
+
+    def dict_to_block(self, block_dict):
+        """
+        Converts a dictionary representation back to a block.
+        """
+        transactions = [Transaction(**tx) for tx in block_dict["transactions"]]
+        block = Block(block_dict["index"], block_dict["previous_hash"], transactions,
+                      block_dict["timestamp"], block_dict["nonce"])
+        block.hash = block_dict["hash"]
+        block.difficulty = block_dict.get("difficulty", 0)
+        return block
+
+    def block_to_dict(self, block):
+        """
+        Converts a block to a dictionary representation.
+        """
+        return {
+            "index": block.index,
+            "previous_hash": block.previous_hash,
+            "transactions": [tx.to_dict() for tx in block.transactions],
+            "timestamp": block.timestamp,
+            "nonce": block.nonce,
+            "merkle_root": getattr(block, 'merkle_root', None),
+            "hash": block.hash,
+            "difficulty": block.difficulty
+        }
+
+    def is_valid_chain(self, chain):
+        """
+        Validates the entire blockchain by verifying hashes, previous hashes, and transaction signatures.
+        """
+        for i in range(1, len(chain)):
+            current_block = chain[i]
+            previous_block = chain[i - 1]
+
+            # Check if current block hash is correct
+            if current_block.hash != current_block.calculate_hash():
+                logging.error(f"Invalid block at index {i}: hash mismatch.")
+                return False
+
+            # Ensure the current block's `previous_hash` matches the previous block's hash
+            if current_block.previous_hash != previous_block.hash:
+                logging.error(f"Invalid block at index {i}: previous hash mismatch.")
+                return False
+
+            # Verify all transactions within the block
+            for transaction in current_block.transactions:
+                if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+                    logging.error(f"Invalid signature for transaction {transaction}")
+                    return False
+
+        logging.info("Chain validated successfully.")
+        return True
+
+    def get_public_key(self, public_key_pem):
+        """
+        Deserializes a public key from PEM format.
+        """
+        try:
+            return serialization.load_pem_public_key(public_key_pem.encode(), backend=default_backend())
+        except ValueError as e:
+            logging.error(f"Failed to load public key: {e}")
+            raise
+
+    def cleanup_mempool(self):
+        """
+        Cleans up the mempool by removing invalid or expired transactions.
+        """
+        current_time = time.time()
+        valid_transactions = []
+
+        for _, _, transaction in self.mempool:
+            # Check if the transaction is still valid (e.g., timestamp is within acceptable range)
+            if transaction.timestamp > current_time - 3600:  # 1-hour validity
+                valid_transactions.append((_, _, transaction))
+
+        self.mempool = valid_transactions  # Update mempool with valid transactions
+
+    def save_chain(self):
+        """
+        Saves the blockchain to a JSON file.
+        """
+        try:
+            with open(self.filename, "w") as f:
+                json.dump([self.block_to_dict(block) for block in self.chain], f, indent=4)
+            logging.info("Blockchain saved successfully.")
+        except (IOError, Exception) as e:
+            logging.error(f"Failed to save blockchain to file: {e}")
+
+    def save_chain(self):
+        """
+        Saves the blockchain to a JSON file, ensuring that the entire chain is persisted for future use.
+        """
+        try:
+            with open(self.filename, "w") as f:
+                json.dump([self.block_to_dict(block) for block in self.chain], f, indent=4)
+            logging.info("Blockchain saved successfully.")
+        except (IOError, Exception) as e:
+            logging.error(f"Failed to save blockchain to file: {e}")
+
+    def load_chain(self):
+        """
+        Loads the blockchain from a JSON file if it exists, ensuring continuity of the blockchain's state.
+        """
+        try:
+            with open(self.filename, "r") as f:
+                data = json.load(f)
+                self.chain = [self.dict_to_block(block_data) for block_data in data]
+            logging.info("Blockchain loaded successfully.")
+        except FileNotFoundError:
+            logging.warning(f"No blockchain file found at {self.filename}. Starting with the genesis block.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode JSON while loading blockchain: {e}")
+        except IOError as e:
+            logging.error(f"Failed to load blockchain from file: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error while loading blockchain: {e}")
+
+    def sync_with_peer(self, peer):
+        """
+        Attempts to synchronize with a peer by fetching their blockchain and checking if it is longer.
+        """
+        try:
+            connection = establish_connection(peer)
+            if connection:
+                connection.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                data = b""
+                while True:
+                    part = connection.recv(BUFFER_SIZE)
+                    if not part:
+                        break
+                    data += part
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+
+                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                    logging.info("Blockchain synchronized with peer's chain.")
+                else:
+                    logging.info("Peer's blockchain is not valid or shorter. No update performed.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode blockchain JSON data from peer {peer}: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error during synchronization with peer: {e}")
+
+    def add_block(self, block):
+        """
+        Adds a new block to the chain after validating its hash and other parameters.
+        """
+        if block.previous_hash == self.get_latest_block().hash and block.hash == block.calculate_hash():
+            self.chain.append(block)
+            self.save_chain()
+            logging.info(f"Block {block.index} added to the blockchain.")
+        else:
+            logging.error(f"Failed to add block {block.index}: invalid block data.")
+
+    def get_latest_block(self):
+        """
+        Returns the latest block in the chain.
+        """
+        return self.chain[-1]
+
+    def mine_block(self, transactions):
+        """
+        Mines a new block using the given transactions.
+        """
+        latest_block = self.get_latest_block()
+        new_block = Block(index=latest_block.index + 1, previous_hash=latest_block.hash, transactions=transactions)
+        new_block.mine_block(self.difficulty)
+        self.add_block(new_block)
+
+    def add_transaction(self, transaction):
+        """
+        Adds a transaction to the mempool after verifying its validity.
+        """
+        if transaction.verify_signature(self.get_public_key(transaction.sender)) and transaction.amount > 0:
+            heapq.heappush(self.mempool, (-transaction.fee, time.time(), transaction))
+            logging.info(f"Transaction added to mempool: {transaction}")
+        else:
+            logging.warning(f"Invalid transaction attempted: {transaction}")
+
+    def mine_new_block(self):
+        """
+        Mines a new block using transactions from the mempool.
+        """
+        if len(self.mempool) == 0:
+            logging.info("No transactions in mempool to mine.")
+            return
+
+        selected_transactions = []
+        while len(selected_transactions) < 10 and self.mempool:
+            _, _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+
+        self.mine_block(selected_transactions)
+        logging.info("New block mined with transactions from mempool.")
+
+def validate_and_add_block(self, block):
+        """
+        Validates a new block and adds it to the blockchain if valid.
+        This method checks the block's hash and its previous hash to ensure integrity.
+        """
+        if self.is_valid_new_block(block, self.get_latest_block()):
+            self.chain.append(block)
+            self.save_chain()
+            logging.info(f"Block {block.index} successfully validated and added.")
+        else:
+            logging.error(f"Invalid block {block.index}: could not be added.")
+
+    def is_valid_new_block(self, new_block, previous_block):
+        """
+        Validates a new block by comparing its hash and previous hash with the current blockchain.
+        """
+        if new_block.previous_hash != previous_block.hash:
+            logging.error(f"Invalid block: Previous hash does not match. Block index: {new_block.index}")
+            return False
+        if new_block.hash != new_block.calculate_hash():
+            logging.error(f"Invalid block: Hash does not match calculated hash. Block index: {new_block.index}")
+            return False
+        return True
+
+    def add_transaction(self, transaction):
+        """
+        Adds a transaction to the mempool after verifying its validity.
+        """
+        if self.verify_transaction(transaction):
+            heapq.heappush(self.mempool, (-transaction.fee, time.time(), transaction))
+            logging.info(f"Transaction added to mempool: {transaction}")
+        else:
+            logging.warning(f"Invalid transaction attempted: {transaction}")
+
+    def verify_transaction(self, transaction):
+        """
+        Verifies if a transaction is valid based on the sender's balance, signature, and other constraints.
+        """
+        sender_balance = self.balances.get(transaction.sender, 0)
+
+        # Check if the transaction already exists in the chain to prevent double-spending
+        if self.is_transaction_in_chain(transaction):
+            logging.warning(f"Transaction from {transaction.sender} to {transaction.receiver} already exists.")
+            return False
+
+        if sender_balance >= transaction.amount + transaction.fee and transaction.verify_signature(self.get_public_key(transaction.sender)):
+            return True
+        else:
+            logging.warning(f"Transaction from {transaction.sender} to {transaction.receiver} is invalid due to insufficient balance or invalid signature.")
+            return False
+
+    def is_transaction_in_chain(self, transaction):
+        """
+        Checks if a transaction is already included in the blockchain to prevent double-spending.
+        """
+        for block in self.chain:
+            if any(tx == transaction for tx in block.transactions):
+                return True
+        return False
+
+    def mine_new_block(self):
+        """
+        Mines a new block using transactions from the mempool.
+        """
+        if not self.mempool:
+            logging.info("No transactions in mempool to mine.")
+            return
+
+        selected_transactions = self.select_transactions_for_block()
+        new_block = Block(
+            index=len(self.chain), 
+            previous_hash=self.get_latest_block().hash, 
+            transactions=selected_transactions
+        )
+        new_block.mine_block(self.difficulty)
+        self.add_block(new_block)
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """
+        Selects transactions from the mempool for inclusion in a new block.
+        """
+        selected_transactions = []
+        while len(selected_transactions) < max_transactions and self.mempool:
+            _, _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+
+            # Update balances
+            self.update_balances(transaction)
+        return selected_transactions
+
+    def update_balances(self, transaction):
+        """
+        Updates the sender and receiver balances after a transaction.
+        """
+        self.balances[transaction.sender] -= (transaction.amount + transaction.fee)
+        self.balances[transaction.receiver] = self.balances.get(transaction.receiver, 0) + transaction.amount
+
+    def adjust_difficulty(self):
+        """
+        Adjusts the mining difficulty based on the average mining time of the last set of blocks.
+        """
+        if len(self.block_times) >= 10:
+            avg_mining_duration = sum(self.block_times[-10:]) / 10
+            target_duration = 180  # Target block time in seconds
+            if avg_mining_duration < target_duration * 0.9:
+                self.difficulty += 1
+            elif avg_mining_duration > target_duration * 1.1:
+                self.difficulty = max(1, self.difficulty - 1)
+
+            logging.info(f"Adjusted mining difficulty to {self.difficulty}.")
+
+    def sync_with_peer(self, peer):
+        """
+        Attempts to synchronize with a peer by fetching their blockchain and checking if it is longer.
+        """
+        try:
+            connection = self.connect_to_peer(peer)
+            if connection:
+                connection.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                data = b""
+                while True:
+                    part = connection.recv(BUFFER_SIZE)
+                    if not part:
+                        break
+                    data += part
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+
+                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                    logging.info("Blockchain synchronized with peer's chain.")
+                else:
+                    logging.info("Peer's blockchain is not valid or shorter. No update performed.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode blockchain JSON data from peer {peer}: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error during synchronization with peer: {e}")
+
+    # Thread-safe method to add new peers
+    def add_peer(self, peer):
+        """
+        Adds a peer to the peer set, ensuring no duplicate entries.
+        """
+        with self.peer_lock:
+            if peer not in self.peers:
+                self.peers.add(peer)
+                logging.info(f"Peer {peer} added successfully.")
+
+    def connect_to_peer(self, peer):
+        """
+        Establishes a connection to a given peer and returns the socket.
+        """
+        try:
             context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             with socket.create_connection((peer.split(':')[0], int(peer.split(':')[1])), timeout=10) as sock:
-                with context.wrap_socket(sock, server_hostname=peer) as s:
-                    s.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
-                    data = s.recv(BUFFER_SIZE).decode()
-                    received_peers = data.split(',')
-                    for new_peer in received_peers:
-                        if new_peer not in self.peers and new_peer != peer:
-                            logging.info(f"Discovered new peer: {new_peer}")
-                            self.peers.add(new_peer)
+                return context.wrap_socket(sock, server_hostname=peer)
         except (socket.error, ssl.SSLError) as e:
-            logging.error(f"Failed to request peers from {peer}: {e}")
+            logging.error(f"Failed to connect to peer {peer}: {e}")
+            return None
+
+    def stop_peer_threads(self):
+        """
+        Stops the peer synchronization and discovery threads gracefully.
+        """
+        self.peer_discovery_thread.stop()
+        self.peer_sync_thread.stop()
+        logging.info("Peer threads stopped successfully.")
+
+def cleanup_mempool(self):
+        """
+        Cleans up the mempool by removing invalid or expired transactions.
+        This method ensures that the mempool contains only valid transactions within a specified validity period.
+        """
+        current_time = time.time()
+        valid_transactions = []
+
+        # Remove transactions that are expired or invalid
+        for _, _, transaction in self.mempool:
+            if transaction.timestamp > current_time - 3600:  # Only keep transactions within 1-hour validity
+                valid_transactions.append((_, _, transaction))
+
+        self.mempool = valid_transactions  # Update mempool with valid transactions
+        logging.info("Mempool cleaned up, expired transactions removed.")
+
+    def reconcile_balances(self):
+        """
+        Reconciles the balances of all accounts by iterating through the entire blockchain.
+        This method is used to rebuild the balance sheet from scratch based on the transactions.
+        """
+        self.balances = defaultdict(int)  # Reset all balances
+
+        for block in self.chain:
+            for transaction in block.transactions:
+                self.balances[transaction.sender] -= (transaction.amount + transaction.fee)
+                self.balances[transaction.receiver] += transaction.amount
+
+        logging.info("Balances reconciled based on the blockchain.")
+
+    def prune_chain(self, retain_last_n=100):
+        """
+        Prunes the blockchain by keeping only the last N blocks.
+        This method is useful to reduce the storage requirements of the blockchain, assuming older data is checkpointed.
+        """
+        if len(self.chain) > retain_last_n:
+            self.chain = self.chain[-retain_last_n:]
+            self.save_chain()
+            logging.info(f"Blockchain pruned to the last {retain_last_n} blocks.")
+
+    def broadcast_block(self, block):
+        """
+        Broadcasts a newly mined block to all peers.
+        This method ensures that all connected peers are informed of new blocks.
+        """
+        for peer in list(self.peers):
+            try:
+                connection = self.connect_to_peer(peer)
+                if connection:
+                    connection.sendall(f"NEW_BLOCK|{json.dumps(self.block_to_dict(block))}|{ACCESS_TOKEN}".encode())
+                    logging.info(f"Broadcasted new block {block.index} to peer {peer}.")
+            except Exception as e:
+                logging.error(f"Failed to broadcast block to peer {peer}: {e}")
+
+    def validate_blockchain(self):
+        """
+        Validates the entire blockchain.
+        Checks each block's hash, previous hash, and the validity of all contained transactions.
+        """
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            if not self.is_valid_new_block(current_block, previous_block):
+                logging.error(f"Blockchain validation failed at block {current_block.index}.")
+                return False
+
+        logging.info("Blockchain validated successfully.")
+        return True
+
+    def initiate_peer_sync(self):
+        """
+        Starts the peer synchronization and peer discovery threads.
+        This method initiates the peer discovery and blockchain sync process across the network.
+        """
+        self.peer_discovery_thread = PeerDiscoveryThread(self.peers, self.peer_lock, self.request_peers_from_peer)
+        self.peer_sync_thread = PeerSyncThread(self.peers, self.peer_lock, self.connect_to_blockchain)
+        self.peer_discovery_thread.start()
+        self.peer_sync_thread.start()
+        logging.info("Peer synchronization and discovery threads initiated.")
+
+         def stop_all_threads(self):
+        """
+        Stops all running threads related to peer synchronization and discovery.
+        Ensures all peer-related threads are gracefully stopped to avoid data corruption or inconsistencies.
+        """
+        threads = [
+            ('peer_discovery_thread', self.peer_discovery_thread),
+            ('peer_sync_thread', self.peer_sync_thread)
+        ]
+
+        for thread_name, thread in threads:
+            if hasattr(self, thread_name) and thread and thread.is_alive():
+                thread.stop()
+                logging.info(f"{thread_name} has been stopped successfully.")
+
+        logging.info("All peer-related threads have been stopped.")
 
     def handle_peer_request(self, ip, command):
         """
-        Handles a peer request, enforcing rate limits to prevent abuse.
+        Handles requests from peers, enforcing rate limits to prevent abuse.
+        Verifies if the rate limit is exceeded before executing the requested command.
         """
         if self.rate_limiter.is_rate_limited(ip, command):
+            logging.warning(f"Rate limit exceeded for IP {ip} on command {command}.")
             return "RATE_LIMIT_EXCEEDED"
 
-        # Handle the command normally
-        # (implementation goes here)
+        # Handle the command normally (e.g., sync, request block, etc.)
+        logging.info(f"Handled peer request from {ip}: {command}")
         return "COMMAND_HANDLED"
+
+    def get_peer_list(self):
+        """
+        Returns a list of known peers to share with requesting nodes.
+        Ensures thread-safe access to the peer list for consistency.
+        """
+        with self.peer_lock:
+            logging.info("Providing peer list to requester.")
+            return list(self.peers)
+
+    def request_peers_from_peer(self, peer):
+        """
+        Requests known peers from another peer to enhance network connectivity.
+        Uses a secure connection to request a peer list, adding new peers to the network.
+        """
+        try:
+            connection = self.connect_to_peer(peer)
+            if connection:
+                connection.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+                data = connection.recv(BUFFER_SIZE).decode()
+                received_peers = data.split(',')
+                with self.peer_lock:
+                    for new_peer in received_peers:
+                        if new_peer and new_peer not in self.peers and new_peer != peer:
+                            self.add_peer(new_peer)
+                            logging.info(f"Discovered new peer: {new_peer}")
+        except (socket.error, ssl.SSLError) as e:
+            logging.error(f"Failed to request peers from {peer}: {e}")
+
+    def initialize_rate_limiter(self):
+        """
+        Initializes the rate limiter to handle requests from peers.
+        This prevents abuse by limiting the number of requests that can be made in a given timeframe.
+        """
+        self.rate_limiter = RateLimiter()
+        logging.info("Rate limiter initialized and ready to manage peer requests.")
+
+    def connect_to_blockchain(self, host):
+        """
+        Connects to a peer's blockchain and syncs if their chain is longer.
+        Attempts to establish a connection with a peer, request their chain, and replace the local chain if appropriate.
+        """
+        try:
+            connection = self.connect_to_peer(host)
+            if connection:
+                connection.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                data = b""
+                while True:
+                    part = connection.recv(BUFFER_SIZE)
+                    if not part:
+                        break
+                    data += part
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+
+                if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                    logging.info("Replaced current blockchain with the longer valid chain from peer.")
+                else:
+                    logging.info("Received blockchain from peer is invalid or not longer. No update performed.")
+        except (socket.error, ssl.SSLError, json.JSONDecodeError) as e:
+            logging.error(f"Error during blockchain synchronization from host {host}: {e}")
+
+    def cleanup_mempool(self):
+        """
+        Cleans up the mempool by removing invalid or expired transactions.
+        This method ensures that the mempool contains only valid transactions within a specified validity period.
+        """
+        current_time = time.time()
+        valid_transactions = []
+
+        # Remove transactions that are expired or invalid
+        for _, _, transaction in self.mempool:
+            if transaction.timestamp > current_time - 3600:  # Only keep transactions within 1-hour validity
+                valid_transactions.append((_, _, transaction))
+
+        self.mempool = valid_transactions  # Update mempool with valid transactions
+        logging.info("Mempool cleaned up, expired transactions removed.")
+
+    def reconcile_balances(self):
+        """
+        Reconciles the balances of all accounts by iterating through the entire blockchain.
+        This method is used to rebuild the balance sheet from scratch based on the transactions.
+        """
+        self.balances = defaultdict(int)  # Reset all balances
+
+        for block in self.chain:
+            for transaction in block.transactions:
+                self.balances[transaction.sender] -= (transaction.amount + transaction.fee)
+                self.balances[transaction.receiver] += transaction.amount
+
+        logging.info("Balances reconciled based on the blockchain.")
+
+    def prune_chain(self, retain_last_n=100):
+        """
+        Prunes the blockchain by keeping only the last N blocks.
+        This method is useful to reduce the storage requirements of the blockchain, assuming older data is checkpointed.
+        """
+        if len(self.chain) > retain_last_n:
+            self.chain = self.chain[-retain_last_n:]
+            self.save_chain()
+            logging.info(f"Blockchain pruned to the last {retain_last_n} blocks.")
+
+    def broadcast_block(self, block):
+        """
+        Broadcasts a newly mined block to all peers.
+        This method ensures that all connected peers are informed of new blocks.
+        """
+        for peer in list(self.peers):
+            try:
+                connection = self.connect_to_peer(peer)
+                if connection:
+                    connection.sendall(f"NEW_BLOCK|{json.dumps(self.block_to_dict(block))}|{ACCESS_TOKEN}".encode())
+                    logging.info(f"Broadcasted new block {block.index} to peer {peer}.")
+            except Exception as e:
+                logging.error(f"Failed to broadcast block to peer {peer}: {e}")
+
+    def validate_blockchain(self):
+        """
+        Validates the entire blockchain.
+        Checks each block's hash, previous hash, and the validity of all contained transactions.
+        """
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            if not self.is_valid_new_block(current_block, previous_block):
+                logging.error(f"Blockchain validation failed at block {current_block.index}.")
+                return False
+
+        logging.info("Blockchain validated successfully.")
+        return True
+
+    def initiate_peer_sync(self):
+        """
+        Initiates and manages the peer synchronization and discovery processes in a streamlined way.
+        Starts both peer discovery and blockchain sync threads, ensuring robust network connectivity.
+        Ensures that only one instance of each thread is running.
+        """
+        # Ensure proper thread initialization with enhanced consistency and error handling
+        try:
+            # Start peer discovery thread if not already running
+            if not hasattr(self, 'peer_discovery_thread') or not self.peer_discovery_thread.is_alive():
+                self.peer_discovery_thread = PeerDiscoveryThread(self.peers, self.peer_lock, self.request_peers_from_peer)
+                self.peer_discovery_thread.start()
+                logging.info("Peer discovery thread started.")
+            else:
+                logging.info("Peer discovery thread is already running.")
+
+            # Start peer synchronization thread if not already running
+            if not hasattr(self, 'peer_sync_thread') or not self.peer_sync_thread.is_alive():
+                self.peer_sync_thread = PeerSyncThread(self.peers, self.peer_lock, self.connect_to_blockchain)
+                self.peer_sync_thread.start()
+                logging.info("Peer synchronization thread started.")
+            else:
+                logging.info("Peer synchronization thread is already running.")
+
+            logging.info("Peer synchronization and discovery processes initiated successfully.")
+        except Exception as e:
+            logging.error(f"Failed to start peer synchronization threads: {e}")
+
+    def connect_to_peer(self, peer):
+        """
+        Establishes a secure connection to a peer.
+        Abstracts the logic for SSL socket connection, ensuring code reuse and consistency.
+        """
+        try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((peer.split(':')[0], int(peer.split(':')[1])), timeout=10) as sock:
+                logging.info(f"Successfully connected to peer {peer}.")
+                return context.wrap_socket(sock, server_hostname=peer)
+        except (socket.error, ssl.SSLError) as e:
+            logging.error(f"Failed to connect to peer {peer}: {e}")
+            return None
+
+class Transaction:
+    def __init__(self, sender, receiver, amount, fee, signature):
+        self.sender = sender
+        self.receiver = receiver
+        self.amount = amount
+        self.fee = fee
+        self.timestamp = time.time()
+        self.signature = signature
+
+    def to_dict(self):
+        return {
+            "sender": self.sender,
+            "receiver": self.receiver,
+            "amount": self.amount,
+            "fee": self.fee,
+            "timestamp": self.timestamp,
+            "signature": self.signature
+        }
+
+    def verify_signature(self, public_key):
+        # Code to verify the transaction signature using the sender's public key.
+        pass
+
+class Block:
+    def __init__(self, index, previous_hash, transactions, nonce=0):
+        self.index = index
+        self.previous_hash = previous_hash
+        self.transactions = transactions
+        self.timestamp = time.time()
+        self.nonce = nonce
+        self.hash = self.calculate_hash()
+
+    def calculate_hash(self):
+        block_string = json.dumps(self.__dict__, sort_keys=True).encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+    def mine_block(self, difficulty):
+        # Proof-of-work algorithm to find a valid nonce
+        target = '0' * difficulty
+        while self.hash[:difficulty] != target:
+            self.nonce += 1
+            self.hash = self.calculate_hash()
