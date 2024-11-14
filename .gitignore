@@ -56,7 +56,7 @@ docs/_build/
 # Jupyter Notebooks
 *.ipynb_checkpoints
 
-# VS Code and JetBrains
+# IDE Directories and Settings
 .vscode/
 .idea/
 
@@ -88,30 +88,18 @@ server.key
 # Optional: Docker Compose Override
 docker-compose.override.yml
 
-# Dependency Management Files
-Pipfile
-Pipfile.lock
-poetry.lock
-# Log files
-*.log
-blockchain.log
-
-# SSL/TLS Certificates
-server.crt
-server.key
-
 # Database Files
 *.db
 *.sqlite3
 
-# Dependency Management
+# Dependency Management Files
 Pipfile
 Pipfile.lock
 poetry.lock
 
-# Docker
+# Docker Related
 .dockerignore
 docker-compose.yml
 Dockerfile
 
-echo "blockchain.log" >> .gitignore
+# Added entries for better coverage and updated for redundancy
