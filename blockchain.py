@@ -818,3 +818,127 @@ if __name__ == "__main__":
         print(f"\nFinal blockchain for Node {node.node_id}:")
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+import threading
+
+class Block:
+    # Other methods remain unchanged
+
+    def mine_block(self, difficulty):
+        """Parallelized mining for efficiency."""
+        target = "0" * difficulty
+        def mine_in_thread(start_nonce):
+            nonce = start_nonce
+            while self.hash[:difficulty] != target and not mined_event.is_set():
+                self.nonce = nonce
+                self.hash = self.calculate_hash()
+                nonce += 1
+            if self.hash[:difficulty] == target:
+                mined_event.set()  # Notify other threads to stop
+
+        mined_event = threading.Event()
+        threads = [threading.Thread(target=mine_in_thread, args=(i,)) for i in range(4)]  # Adjust thread count as needed
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+MAX_MEMPOOL_SIZE = 1000  # Define a max mempool size
+
+class Blockchain:
+    # Existing methods...
+
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool if within limits."""
+        if len(self.mempool) >= MAX_MEMPOOL_SIZE:
+            self.cleanup_mempool()  # Trigger cleanup when near capacity
+        return super().add_transaction(transaction, fee)
+
+    def cleanup_mempool(self):
+        """Garbage collection for old or low-fee transactions."""
+        self.mempool.sort(key=lambda x: (x[0], x[1]))  # Sort by fee and time
+        self.mempool = self.mempool[:MAX_MEMPOOL_SIZE]  # Retain only the highest-priority transactions
+from prometheus_client import start_http_server, Gauge
+
+BLOCK_TIME = Gauge('block_time_seconds', 'Time to mine a block')
+PEER_CONNECTIONS = Gauge('peer_connections', 'Number of connected peers')
+
+def monitor_metrics(blockchain):
+    BLOCK_TIME.set(sum(blockchain.block_times) / len(blockchain.block_times) if blockchain.block_times else 0)
+    PEER_CONNECTIONS.set(len(blockchain.peers))
+
+# Call monitor_metrics periodically
+import socket
+
+# Modify server socket to support both IPv4 and IPv6
+def start_server(blockchain):
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as server:  # Use AF_INET6 for IPv6
+        server.bind(("::", PORT))  # "::" binds to all available IPv6 addresses
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on IPv6 port {PORT} with TLS")
+
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    handle_client_connection(client_socket, address, blockchain)
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
+import re
+
+class Blockchain:
+    def add_peer(self, peer_address):
+        """Adds a new peer, handling both IPv4 and IPv6 addresses."""
+        if self.is_valid_ip(peer_address):
+            self.peers.add(peer_address)
+
+    @staticmethod
+    def is_valid_ip(address):
+        """Validates if an address is IPv4 or IPv6."""
+        try:
+            socket.inet_pton(socket.AF_INET, address)  # Check if IPv4
+            return True
+        except socket.error:
+            try:
+                socket.inet_pton(socket.AF_INET6, address)  # Check if IPv6
+                return True
+            except socket.error:
+                logging.warning(f"Invalid IP address: {address}")
+                return False
+def connect_to_peer(self, host, port=PORT):
+    """Attempt connection to a peer over IPv6 or fallback to IPv4 if needed."""
+    for family, _, _, _, sockaddr in socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.connect(sockaddr)
+                return sock
+        except socket.error as e:
+            logging.error(f"Connection attempt failed for {sockaddr}: {e}")
+def exchange_peer_list(self, peer_address):
+    """Exchange peer lists, handling IPv6 formatting."""
+    try:
+        with self.connect_to_peer(peer_address) as s:
+            s.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+            data = s.recv(BUFFER_SIZE).decode()
+            received_peers = data.split(",")
+
+            for peer in received_peers:
+                if not self.is_self(peer):
+                    self.add_peer(peer)
+    except Exception as e:
+        logging.error(f"Error during peer list exchange with {peer_address}: {e}")
+def rate_limit_check(ip, command):
+    """Check if the given IP address (IPv4 or IPv6) exceeds the rate limit."""
+    current_time = datetime.now()
+    if ip not in rate_limit_tracker:
+        rate_limit_tracker[ip] = {command: []}
+
+    # Cleanup old entries
+    rate_limit_tracker[ip][command] = [t for t in rate_limit_tracker[ip][command] if current_time - t < RATE_LIMIT_WINDOW]
+
+    if len(rate_limit_tracker[ip][command]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+
+    rate_limit_tracker[ip][command].append(current_time)
+    return True
