@@ -5,7 +5,5 @@ requests>=2.25.1  # Optional, if needed for future peer communication
 pytest>=6.0.0  # For testing
 sortedcontainers>=2.4.0  # For efficient queue management in mempool
 pyopenssl>=20.0.0  # For enhanced SSL/TLS support
-cryptography
-ecdsa
-python-dotenv
-requests
+ecdsa>=0.16.0  # For handling elliptic curve cryptography
+
