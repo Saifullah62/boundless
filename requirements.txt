@@ -2,3 +2,6 @@ Flask>=2.0.0
 cryptography>=3.4.7
 python-dotenv>=0.15.0
 requests>=2.25.1  # Optional, if needed for future peer communication
+pytest>=6.0.0  # For testing
+sortedcontainers>=2.4.0  # For efficient queue management in mempool
+pyopenssl>=20.0.0  # For enhanced SSL/TLS support
