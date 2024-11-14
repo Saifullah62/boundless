@@ -88,9 +88,6 @@ class Transaction:
         except InvalidSignature:
             logging.warning(f"Invalid signature for transaction from {self.sender} to {self.receiver}.")
             return False
-        except Exception as e:
-            logging.error(f"Error verifying signature: {e}")
-            return False
 
 class MerkleTree:
     """Constructs a Merkle Tree from a list of transactions."""
@@ -439,3 +436,386 @@ def rate_limit_check(ip, command):
     # Log new request
     rate_limit_tracker[ip][command].append(current_time)
     return True
+
+import random
+import threading
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.load_chain()
+        self.block_times = []  # Track mining times for blocks
+        self.peers = set()  # Set of known peer addresses (e.g., 'IP:PORT')
+
+        # Start the peer discovery thread
+        discovery_thread = threading.Thread(target=self.peer_discovery)
+        discovery_thread.daemon = True
+        discovery_thread.start()
+
+    def add_peer(self, peer_address):
+        """Adds a new peer to the known peers list."""
+        self.peers.add(peer_address)
+
+    def peer_discovery(self):
+        """Periodically attempts to discover new peers using a gossip protocol."""
+        while True:
+            if self.peers:
+                # Select a random peer to communicate with
+                random_peer = random.choice(list(self.peers))
+                try:
+                    self.exchange_peer_list(random_peer)
+                except Exception as e:
+                    logging.error(f"Failed to exchange peers with {random_peer}: {e}")
+            time.sleep(30)  # Adjust the interval as needed
+
+    def exchange_peer_list(self, peer_address):
+        """Sends the current peer list to a peer and receives their peer list."""
+        try:
+            # Establish a connection
+            context = ssl.create_default_context()
+            with socket.create_connection((peer_address, PORT)) as sock:
+                with context.wrap_socket(sock, server_hostname=peer_address) as s:
+                    # Send peer discovery request
+                    s.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+                    data = b""
+                    while True:
+                        part = s.recv(BUFFER_SIZE)
+                        if not part:
+                            break
+                        data += part
+
+                    received_peers = data.decode().split(",")
+                    for peer in received_peers:
+                        if peer != self.get_self_address():  # Avoid adding self
+                            self.peers.add(peer)
+        except Exception as e:
+            logging.error(f"Error during peer list exchange with {peer_address}: {e}")
+
+    def get_self_address(self):
+        """Retrieve the node's own IP address and port."""
+        hostname = socket.gethostname()
+        ip_address = socket.gethostbyname(hostname)
+        return f"{ip_address}:{PORT}"
+
+# Server modification to handle peer list requests
+
+def start_server(blockchain):
+    """Starts a server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on port {PORT} with TLS")
+
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    with client_socket:
+                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
+                            logging.warning(f"Rate limit exceeded for {address[0]}")
+                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                            continue
+
+                        request = client_socket.recv(BUFFER_SIZE).decode()
+                        request_parts = request.split("|")
+
+                        # Handle peer list request
+                        if len(request_parts) == 2 and request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
+                            peer_list = ",".join(blockchain.peers)
+                            client_socket.sendall(peer_list.encode())
+                            logging.info(f"Sent peer list to peer at {address}")
+
+                        elif len(request_parts) == 2 and request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
+                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
+                            client_socket.sendall(blockchain_data.encode())
+                            logging.info(f"Sent blockchain to peer at {address}")
+
+                        else:
+                            logging.warning(f"Unauthorized access attempt from {address}")
+                            client_socket.sendall(b"ACCESS_DENIED")
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
+
+import heapq
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.load_chain()
+        self.block_times = []
+        self.peers = set()
+        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
+
+        # Start peer discovery in a separate thread
+        discovery_thread = threading.Thread(target=self.peer_discovery)
+        discovery_thread.daemon = True
+        discovery_thread.start()
+
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool with an optional fee for prioritization."""
+        # Validate transaction signature
+        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
+            return False
+
+        # Use fee and timestamp to prioritize transactions in the mempool
+        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
+        heapq.heappush(self.mempool, (priority, transaction))
+        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
+        return True
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+        return selected_transactions
+
+    def add_block(self, new_block):
+        """Adds a new block to the blockchain after mining it."""
+        # Select high-priority transactions for the new block
+        new_block.transactions = self.select_transactions_for_block()
+
+        new_block.previous_hash = self.get_latest_block().hash
+        start_time = time.time()
+        new_block.mine_block(self.difficulty)
+        end_time = time.time()
+
+        self.block_times.append(end_time - start_time)
+        logging.info(f"Block {new_block.index} mined in {end_time - start_time:.2f} seconds with difficulty {self.difficulty}")
+
+        self.adjust_difficulty()
+        self.chain.append(new_block)
+        self.save_chain()
+
+    def get_mempool_transactions(self):
+        """Returns the list of transactions currently in the mempool."""
+        return [tx for _, tx in self.mempool]
+
+
+def start_server(blockchain):
+    """Starts a server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on port {PORT} with TLS")
+
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    with client_socket:
+                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
+                            logging.warning(f"Rate limit exceeded for {address[0]}")
+                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                            continue
+
+                        request = client_socket.recv(BUFFER_SIZE).decode()
+                        request_parts = request.split("|")
+
+                        # Handle different requests
+                        if request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
+                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
+                            client_socket.sendall(blockchain_data.encode())
+                            logging.info(f"Sent blockchain to peer at {address}")
+
+                        elif request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
+                            peer_list = ",".join(blockchain.peers)
+                            client_socket.sendall(peer_list.encode())
+                            logging.info(f"Sent peer list to peer at {address}")
+
+                        elif request_parts[0] == "NEW_TRANSACTION":
+                            # Deserialize transaction and add to mempool
+                            transaction_data = json.loads(request_parts[1])
+                            transaction = Transaction(**transaction_data)
+                            if blockchain.add_transaction(transaction):
+                                logging.info(f"Received and added new transaction from {address}")
+                            else:
+                                logging.warning(f"Failed to add transaction from {address}")
+
+                        elif request_parts[0] == "NEW_BLOCK":
+                            # Deserialize block and validate
+                            block_data = json.loads(request_parts[1])
+                            new_block = blockchain.dict_to_block(block_data)
+                            if blockchain.is_block_valid(new_block):
+                                blockchain.add_block(new_block)
+                                logging.info(f"Received and added new block from {address}")
+                            else:
+                                logging.warning(f"Invalid block received from {address}")
+
+                        elif request_parts[0] == "HANDSHAKE":
+                            # Basic handshake for compatibility check
+                            client_socket.sendall(b"HANDSHAKE_OK")
+                            logging.info(f"Handshake successful with {address}")
+
+                        else:
+                            logging.warning(f"Unauthorized access attempt from {address}")
+                            client_socket.sendall(b"ACCESS_DENIED")
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
+
+# Adding enhanced functionality to simulate modules like GeoSovereign, RegBlock, and others.
+
+import copy
+import random
+
+class GeoSovereign:
+    """Handles geographical data compliance."""
+    def detect_data_origin(self, transaction):
+        # Simulating detection of geographical origin based on sender information
+        regions = ["US", "EU", "ASIA"]
+        return random.choice(regions)
+
+class RegBlock:
+    """Applies regulatory compliance based on GeoSovereign data."""
+    def apply_regulations(self, region):
+        if region == "US":
+            print("Applying US data regulations.")
+        elif region == "EU":
+            print("Applying GDPR compliance.")
+        elif region == "ASIA":
+            print("Applying regional Asia-Pacific data laws.")
+        # Additional rules could be added for specific compliance needs
+
+class TransparencySuite:
+    """Tracks user consent for data usage."""
+    def __init__(self):
+        self.consent_registry = {}
+
+    def add_consent(self, user, consent_type):
+        self.consent_registry[user] = consent_type
+        print(f"User {user} consented to {consent_type} usage.")
+
+    def revoke_consent(self, user):
+        if user in self.consent_registry:
+            del self.consent_registry[user]
+            print(f"User {user} revoked their consent.")
+
+class ErasureGuard:
+    """Simulates the 'right to be forgotten' for blockchain transactions."""
+    def __init__(self):
+        self.nullified_transactions = set()
+
+    def nullify_data(self, transaction_id):
+        self.nullified_transactions.add(transaction_id)
+        print(f"Transaction {transaction_id} has been nullified.")
+
+    def is_data_nullified(self, transaction_id):
+        return transaction_id in self.nullified_transactions
+
+class ComplianceAuditToolkit:
+    """Performs audits and monitors compliance of the blockchain."""
+    def audit(self, blockchain):
+        print("Performing compliance audit...")
+        for block in blockchain.chain:
+            for tx in block.transactions:
+                # Placeholder for checking compliance
+                print(f"Audit Check: Transaction from {tx.sender} to {tx.receiver}, Amount: {tx.amount}")
+
+# Integrating modules into the blockchain simulation
+class BlockchainNodeEnhanced:
+    def __init__(self, node_id, difficulty=2):
+        self.node_id = node_id
+        self.blockchain = Blockchain(difficulty=difficulty)
+        self.geosovereign = GeoSovereign()
+        self.regblock = RegBlock()
+        self.transparency_suite = TransparencySuite()
+        self.erasure_guard = ErasureGuard()
+        self.audit_toolkit = ComplianceAuditToolkit()
+        self.peers = []  # List of peer nodes
+
+    def add_peer(self, peer_node):
+        self.peers.append(peer_node)
+
+    def receive_transaction(self, transaction):
+        # Determine geographic region
+        region = self.geosovereign.detect_data_origin(transaction)
+        # Apply regulatory compliance based on detected region
+        self.regblock.apply_regulations(region)
+        # Add transaction to the blockchain's mempool
+        self.blockchain.add_transaction(transaction)
+
+    def mine_block(self):
+        # Before mining, check all transactions for user consent via Transparency Suite
+        for tx in self.blockchain.mempool:
+            if tx.sender in self.transparency_suite.consent_registry:
+                if self.transparency_suite.consent_registry[tx.sender] != "approved":
+                    print(f"Transaction from {tx.sender} not approved for mining.")
+                    self.blockchain.mempool.remove(tx)
+        # Proceed with mining
+        self.blockchain.mine_block()
+
+    def sync_with_peers(self):
+        for peer in self.peers:
+            self.replace_chain_if_needed(peer.blockchain)
+
+    def replace_chain_if_needed(self, new_chain):
+        # Replace chain if new chain is longer and valid
+        if len(new_chain.chain) > len(self.blockchain.chain) and new_chain.is_chain_valid():
+            print(f"Node {self.node_id} replaced its chain with a longer one from a peer.")
+            self.blockchain = copy.deepcopy(new_chain)
+
+    def perform_audit(self):
+        # Use the ComplianceAuditToolkit to audit the blockchain
+        self.audit_toolkit.audit(self.blockchain)
+
+# Testing enhanced blockchain simulation
+if __name__ == "__main__":
+    # Create enhanced blockchain nodes
+    node_A = BlockchainNodeEnhanced("A", difficulty=2)
+    node_B = BlockchainNodeEnhanced("B", difficulty=2)
+    node_C = BlockchainNodeEnhanced("C", difficulty=2)
+
+    # Establish peer connections
+    node_A.add_peer(node_B)
+    node_A.add_peer(node_C)
+    node_B.add_peer(node_A)
+    node_B.add_peer(node_C)
+    node_C.add_peer(node_A)
+    node_C.add_peer(node_B)
+
+    # Generate some transactions
+    transactions = [
+        Transaction("Alice", "Bob", 10),
+        Transaction("Charlie", "David", 20),
+        Transaction("Eve", "Frank", 50)
+    ]
+
+    # Add user consent for some transactions in Transparency Suite
+    node_A.transparency_suite.add_consent("Alice", "approved")
+    node_A.transparency_suite.add_consent("Charlie", "approved")
+
+    # Nodes receive transactions
+    for tx in transactions:
+        node_A.receive_transaction(tx)
+        time.sleep(0.5)
+
+    # Nodes mine blocks
+    node_A.mine_block()
+    node_B.mine_block()
+    node_C.mine_block()
+
+    # Perform compliance audit
+    node_A.perform_audit()
+
+    # Simulate right to be forgotten
+    tx_to_nullify = "Charlie_to_David"
+    node_A.erasure_guard.nullify_data(tx_to_nullify)
+
+    # Final state of each blockchain
+    for node in [node_A, node_B, node_C]:
+        print(f"\nFinal blockchain for Node {node.node_id}:")
+        for block in node.blockchain.chain:
+            print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+
