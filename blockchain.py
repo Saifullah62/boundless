@@ -912,3 +912,92 @@ if __name__ == "__main__":
     selected_transactions = blockchain.select_transactions_for_block()
     print(f"Selected Transactions for Block: {selected_transactions}")
 
+import heapq
+import time
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json", mempool_limit=100):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.load_chain()
+        self.block_times = []
+        self.peers = set()
+        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
+        self.mempool_limit = mempool_limit  # Limit number of transactions in the mempool
+
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool with an optional fee for prioritization."""
+        # Validate transaction signature
+        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
+            return False
+
+        # Enforce the mempool limit
+        if len(self.mempool) >= self.mempool_limit:
+            # Compare new transaction fee with the lowest fee in the mempool
+            if fee <= -self.mempool[0][0]:
+                logging.info(f"Transaction {transaction} discarded because mempool is full and the fee is too low.")
+                return False
+            # Remove the lowest fee transaction to make space
+            heapq.heappop(self.mempool)
+            logging.info(f"Lowest fee transaction removed to add new transaction with higher fee.")
+
+        # Use fee and timestamp to prioritize transactions in the mempool
+        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
+        heapq.heappush(self.mempool, (priority, transaction))
+        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
+        return True
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+        return selected_transactions
+
+    def get_mempool_transactions(self):
+        """Returns the list of transactions currently in the mempool."""
+        return [tx for _, tx in self.mempool]
+class Blockchain:
+    # Rest of the class remains the same...
+    
+    def cleanup_mempool(self, max_age=600):
+        """Removes transactions from the mempool that are older than a specified max age."""
+        current_time = time.time()
+        cleaned_mempool = []
+        removed_count = 0
+
+        while self.mempool:
+            priority, transaction = heapq.heappop(self.mempool)
+            timestamp = priority[1]
+
+            # If the transaction is too old, discard it
+            if current_time - timestamp > max_age:
+                removed_count += 1
+                continue
+
+            # Otherwise, keep it
+            cleaned_mempool.append((priority, transaction))
+
+        # Rebuild the mempool
+        for item in cleaned_mempool:
+            heapq.heappush(self.mempool, item)
+
+        logging.info(f"Cleaned up {removed_count} old transactions from the mempool.")
+
+# Example usage to clean up old transactions every minute
+import threading
+
+def periodic_cleanup(blockchain, interval=60):
+    """Periodically cleans up the mempool to remove old transactions."""
+    while True:
+        blockchain.cleanup_mempool()
+        time.sleep(interval)
+
+# Initialize the blockchain and start the cleanup thread
+blockchain = Blockchain(difficulty=2)
+cleanup_thread = threading.Thread(target=periodic_cleanup, args=(blockchain,))
+cleanup_thread.daemon = True
+cleanup_thread.start()
