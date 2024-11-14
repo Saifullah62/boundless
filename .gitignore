@@ -113,3 +113,5 @@ poetry.lock
 .dockerignore
 docker-compose.yml
 Dockerfile
+
+echo "blockchain.log" >> .gitignore
