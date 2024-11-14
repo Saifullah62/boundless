@@ -306,36 +306,7 @@ class Blockchain:
                 if not transaction.verify_signature(self.get_public_key(transaction.sender)):
                     return False
         return True
-def is_chain_valid(self):
-    """Optimized method to validate the blockchain."""
-    # Set a checkpoint interval (e.g., every 100 blocks).
-    checkpoint_interval = 100
 
-    for i in range(1, len(self.chain)):
-        current_block = self.chain[i]
-        previous_block = self.chain[i - 1]
-        
-        # 1. Verify block hash integrity
-        if current_block.hash != current_block.calculate_hash():
-            logging.error(f"Invalid block at index {i}: hash mismatch.")
-            return False
-        if current_block.previous_hash != previous_block.hash:
-            logging.error(f"Invalid block at index {i}: previous hash mismatch.")
-            return False
-
-        # 2. Skip full validation for checkpointed blocks
-        if i % checkpoint_interval == 0:
-            logging.info(f"Checkpoint reached at block {i}.")
-            continue
-
-        # 3. Efficient Merkle Root Verification
-        merkle_tree = MerkleTree(current_block.transactions)
-        if merkle_tree.root != current_block.merkle_root:
-            logging.error(f"Merkle root mismatch at block {i}.")
-            return False
-
-    logging.info("Blockchain validation successful.")
-    return True
 class MultiSigTransaction:
     """Represents a multi-signature transaction in the blockchain."""
     def __init__(self, sender, receiver, amount, required_signatures=2):
