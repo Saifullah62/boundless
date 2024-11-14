@@ -43,7 +43,7 @@ load_dotenv()
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", secrets.token_hex(16))
 
 # Rate limiting dictionary
-rate_limit_tracker = defaultdict(list)
+rate_limit_tracker = defaultdict(lambda: defaultdict(list))
 
 class Transaction:
     """Represents a transaction in the blockchain."""
@@ -142,6 +142,7 @@ class Blockchain:
         self.filename = filename
         self.load_chain()
         self.block_times = []  # Track mining times for blocks
+        self.peers = set()  # Set of known peer addresses (e.g., 'IP:PORT')
 
     def create_genesis_block(self):
         """Creates the first block in the blockchain."""
@@ -369,7 +370,7 @@ def start_server(blockchain):
                 try:
                     client_socket, address = tls_server.accept()
                     with client_socket:
-                        if not rate_limit_check(address[0]):
+                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
                             logging.warning(f"Rate limit exceeded for {address[0]}")
                             client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
                             continue
@@ -419,17 +420,20 @@ def start_server(blockchain):
                     logging.error(f"Error handling client connection: {e}")
 
 
-def rate_limit_check(ip):
-    """Check if the given IP address exceeds the rate limit."""
+def rate_limit_check(ip, command):
+    """Check if the given IP address exceeds the rate limit for a specific command."""
     current_time = datetime.now()
-    request_times = rate_limit_tracker[ip]
+    request_times = rate_limit_tracker[ip][command]
+    
     # Remove outdated requests
-    rate_limit_tracker[ip] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
+    rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
+    
     # Check current rate
-    if len(rate_limit_tracker[ip]) >= MAX_REQUESTS_PER_WINDOW:
+    if len(rate_limit_tracker[ip][command]) >= MAX_REQUESTS_PER_WINDOW:
         return False
+    
     # Log new request
-    rate_limit_tracker[ip].append(current_time)
+    rate_limit_tracker[ip][command].append(current_time)
     return True
 
 import random
@@ -511,7 +515,7 @@ def start_server(blockchain):
                 try:
                     client_socket, address = tls_server.accept()
                     with client_socket:
-                        if not rate_limit_check(address[0]):
+                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
                             logging.warning(f"Rate limit exceeded for {address[0]}")
                             client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
                             continue
@@ -595,6 +599,7 @@ class Blockchain:
         """Returns the list of transactions currently in the mempool."""
         return [tx for _, tx in self.mempool]
 
+
 def start_server(blockchain):
     """Starts a server to listen for blockchain requests from peers."""
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -610,7 +615,7 @@ def start_server(blockchain):
                 try:
                     client_socket, address = tls_server.accept()
                     with client_socket:
-                        if not rate_limit_check(address[0]):
+                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
                             logging.warning(f"Rate limit exceeded for {address[0]}")
                             client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
                             continue
@@ -661,8 +666,10 @@ def start_server(blockchain):
 
 
 def broadcast_transaction(self, transaction):
-    """Broadcasts a new transaction to all known peers."""
+    """Broadcasts a new transaction to all known peers with error handling."""
     transaction_data = json.dumps(transaction.to_dict())
+    failed_peers = []
+
     for peer in self.peers:
         try:
             with socket.create_connection((peer, PORT)) as sock:
@@ -672,11 +679,19 @@ def broadcast_transaction(self, transaction):
                     logging.info(f"Broadcasted transaction to {peer}")
         except Exception as e:
             logging.error(f"Failed to broadcast transaction to {peer}: {e}")
+            failed_peers.append(peer)
+
+    # Remove consistently failing peers
+    for peer in failed_peers:
+        self.peers.remove(peer)
+        logging.info(f"Removed unresponsive peer: {peer}")
 
 
 def broadcast_block(self, block):
-    """Broadcasts a new block to all known peers."""
+    """Broadcasts a new block to all known peers with error handling."""
     block_data = json.dumps(self.block_to_dict(block))
+    failed_peers = []
+
     for peer in self.peers:
         try:
             with socket.create_connection((peer, PORT)) as sock:
@@ -686,6 +701,12 @@ def broadcast_block(self, block):
                     logging.info(f"Broadcasted block to {peer}")
         except Exception as e:
             logging.error(f"Failed to broadcast block to {peer}: {e}")
+            failed_peers.append(peer)
+
+    # Remove unresponsive peers
+    for peer in failed_peers:
+        self.peers.remove(peer)
+        logging.info(f"Removed unresponsive peer: {peer}")
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -725,153 +746,8 @@ class Blockchain:
     def is_chain_valid(self):
         """Validates the blockchain using cached and parallel validation."""
         return self.validate_chain_in_parallel()
-def broadcast_transaction(self, transaction):
-    """Broadcasts a new transaction to all known peers with error handling."""
-    transaction_data = json.dumps(transaction.to_dict())
-    failed_peers = []
 
-    for peer in self.peers:
-        try:
-            with socket.create_connection((peer, PORT)) as sock:
-                context = ssl.create_default_context()
-                with context.wrap_socket(sock, server_hostname=peer) as s:
-                    s.sendall(f"NEW_TRANSACTION|{transaction_data}".encode())
-                    logging.info(f"Broadcasted transaction to {peer}")
-        except Exception as e:
-            logging.error(f"Failed to broadcast transaction to {peer}: {e}")
-            failed_peers.append(peer)
 
-    # Remove consistently failing peers
-    for peer in failed_peers:
-        self.peers.remove(peer)
-        logging.info(f"Removed unresponsive peer: {peer}")
-
-def broadcast_block(self, block):
-    """Broadcasts a new block to all known peers with error handling."""
-    block_data = json.dumps(self.block_to_dict(block))
-    failed_peers = []
-
-    for peer in self.peers:
-        try:
-            with socket.create_connection((peer, PORT)) as sock:
-                context = ssl.create_default_context()
-                with context.wrap_socket(sock, server_hostname=peer) as s:
-                    s.sendall(f"NEW_BLOCK|{block_data}".encode())
-                    logging.info(f"Broadcasted block to {peer}")
-        except Exception as e:
-            logging.error(f"Failed to broadcast block to {peer}: {e}")
-            failed_peers.append(peer)
-
-    # Remove unresponsive peers
-    for peer in failed_peers:
-        self.peers.remove(peer)
-        logging.info(f"Removed unresponsive peer: {peer}")
-def calculate_chain_hash(self):
-    """Calculates a hash representing the entire blockchain for integrity checks."""
-    chain_data = "".join([block.hash for block in self.chain])
-    return hashlib.sha256(chain_data.encode()).hexdigest()
-
-def sync_with_peer(self, peer):
-    """Synchronizes blockchain data with a peer, checking data integrity."""
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((peer, PORT)) as sock:
-            with context.wrap_socket(sock, server_hostname=peer) as s:
-                s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
-                data = b""
-                while True:
-                    part = s.recv(BUFFER_SIZE)
-                    if not part:
-                        break
-                    data += part
-
-                received_chain = json.loads(data.decode())
-                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
-
-                # Calculate hash of received chain
-                received_chain_hash = hashlib.sha256("".join([block.hash for block in received_chain_objects]).encode()).hexdigest()
-                local_chain_hash = self.calculate_chain_hash()
-
-                if received_chain_hash != local_chain_hash and len(received_chain_objects) > len(self.chain):
-                    logging.info("Replacing local blockchain with the received chain due to valid integrity check.")
-                    self.chain = received_chain_objects
-                    self.save_chain()
-                else:
-                    logging.info("Blockchain data from peer is invalid or not longer. No update performed.")
-
-    except (socket.error, json.JSONDecodeError, Exception) as e:
-        logging.error(f"Error syncing blockchain data from {peer}: {e}")
-from collections import defaultdict
-
-# Updated rate limit structure with per-command tracking
-rate_limit_tracker = defaultdict(lambda: defaultdict(list))
-
-def rate_limit_check(ip, command):
-    """Check if the given IP address exceeds the rate limit for a specific command."""
-    current_time = datetime.now()
-    request_times = rate_limit_tracker[ip][command]
-    
-    # Remove outdated requests
-    rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
-    
-    # Check current rate
-    if len(rate_limit_tracker[ip][command]) >= MAX_REQUESTS_PER_WINDOW:
-        return False
-    
-    # Log new request
-    rate_limit_tracker[ip][command].append(current_time)
-    return True
-
-# Example usage in server code
-if not rate_limit_check(address[0], "NEW_TRANSACTION"):
-    logging.warning(f"Rate limit exceeded for NEW_TRANSACTION by {address[0]}")
-    client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
-    continue
-def compare_chains(local_chain, new_chain):
-    """Compares two chains and returns the preferred one.
-    
-    If new_chain is longer or has higher cumulative difficulty,
-    it is selected. Otherwise, local_chain is preferred.
-    """
-    if len(new_chain) > len(local_chain):
-        return new_chain
-    elif len(new_chain) == len(local_chain):
-        # Tie-breaking: Select chain with highest cumulative difficulty
-        local_difficulty = sum(block.difficulty for block in local_chain)
-        new_difficulty = sum(block.difficulty for block in new_chain)
-        
-        if new_difficulty > local_difficulty:
-            return new_chain
-        # Additional tie-breaking using the latest block timestamp
-        elif new_difficulty == local_difficulty:
-            if new_chain[-1].timestamp < local_chain[-1].timestamp:
-                return new_chain
-    return local_chain
-def replace_chain(self, new_chain):
-    """Attempts to replace the local chain with a new chain after evaluation.
-    
-    Saves the current chain as a rollback option if the new chain is preferred.
-    """
-    preferred_chain = compare_chains(self.chain, new_chain)
-    
-    if preferred_chain != self.chain:
-        # Save the current chain state in case rollback is needed
-        self.rollback_chain = list(self.chain)  # Deep copy of current chain
-        
-        # Replace the chain with the new one
-        self.chain = new_chain
-        self.save_chain()
-        logging.info("Chain replaced with a preferred chain from peer.")
-    else:
-        logging.info("Received chain is not preferred; no replacement done.")
-
-def rollback_chain(self):
-    """Restores the previous chain if the current chain is invalidated."""
-    if hasattr(self, 'rollback_chain'):
-        self.chain = self.rollback_chain
-        del self.rollback_chain
-        self.save_chain()
-        logging.info("Chain rolled back to previous state.")
 def request_chain_from_peers(self):
     """Requests chains from multiple peers and selects the most common chain."""
     peer_chains = []
@@ -899,6 +775,7 @@ def request_chain_from_peers(self):
     # Find the most common chain among peers
     return self.select_most_common_chain(peer_chains)
 
+
 def select_most_common_chain(self, peer_chains):
     """Selects the most common chain among peer chains based on majority rule."""
     chain_counts = {}
@@ -913,6 +790,8 @@ def select_most_common_chain(self, peer_chains):
     # Select the chain with the highest count (consensus)
     most_common_chain = max(chain_counts.values(), key=lambda x: x['count'])['chain']
     return most_common_chain
+
+
 def sync_with_peer(self):
     """Syncs the blockchain with peers, using multi-round consensus for forks."""
     # Request chains from peers and determine the most common one
@@ -920,3 +799,157 @@ def sync_with_peer(self):
 
     # If a preferred chain is found, evaluate and replace if needed
     self.replace_chain(preferred_chain)
+# Adding enhanced functionality to simulate modules like GeoSovereign, RegBlock, and others.
+
+import copy
+import random
+
+class GeoSovereign:
+    """Handles geographical data compliance."""
+    def detect_data_origin(self, transaction):
+        # Simulating detection of geographical origin based on sender information
+        regions = ["US", "EU", "ASIA"]
+        return random.choice(regions)
+
+class RegBlock:
+    """Applies regulatory compliance based on GeoSovereign data."""
+    def apply_regulations(self, region):
+        if region == "US":
+            print("Applying US data regulations.")
+        elif region == "EU":
+            print("Applying GDPR compliance.")
+        elif region == "ASIA":
+            print("Applying regional Asia-Pacific data laws.")
+        # Additional rules could be added for specific compliance needs
+
+class TransparencySuite:
+    """Tracks user consent for data usage."""
+    def __init__(self):
+        self.consent_registry = {}
+
+    def add_consent(self, user, consent_type):
+        self.consent_registry[user] = consent_type
+        print(f"User {user} consented to {consent_type} usage.")
+
+    def revoke_consent(self, user):
+        if user in self.consent_registry:
+            del self.consent_registry[user]
+            print(f"User {user} revoked their consent.")
+
+class ErasureGuard:
+    """Simulates the 'right to be forgotten' for blockchain transactions."""
+    def __init__(self):
+        self.nullified_transactions = set()
+
+    def nullify_data(self, transaction_id):
+        self.nullified_transactions.add(transaction_id)
+        print(f"Transaction {transaction_id} has been nullified.")
+
+    def is_data_nullified(self, transaction_id):
+        return transaction_id in self.nullified_transactions
+
+class ComplianceAuditToolkit:
+    """Performs audits and monitors compliance of the blockchain."""
+    def audit(self, blockchain):
+        print("Performing compliance audit...")
+        for block in blockchain.chain:
+            for tx in block.transactions:
+                # Placeholder for checking compliance
+                print(f"Audit Check: Transaction from {tx.sender} to {tx.receiver}, Amount: {tx.amount}")
+
+# Integrating modules into the blockchain simulation
+class BlockchainNodeEnhanced:
+    def __init__(self, node_id, difficulty=2):
+        self.node_id = node_id
+        self.blockchain = Blockchain(difficulty=difficulty)
+        self.geosovereign = GeoSovereign()
+        self.regblock = RegBlock()
+        self.transparency_suite = TransparencySuite()
+        self.erasure_guard = ErasureGuard()
+        self.audit_toolkit = ComplianceAuditToolkit()
+        self.peers = []  # List of peer nodes
+
+    def add_peer(self, peer_node):
+        self.peers.append(peer_node)
+
+    def receive_transaction(self, transaction):
+        # Determine geographic region
+        region = self.geosovereign.detect_data_origin(transaction)
+        # Apply regulatory compliance based on detected region
+        self.regblock.apply_regulations(region)
+        # Add transaction to the blockchain's mempool
+        self.blockchain.add_transaction(transaction)
+
+    def mine_block(self):
+        # Before mining, check all transactions for user consent via Transparency Suite
+        for tx in self.blockchain.mempool:
+            if tx.sender in self.transparency_suite.consent_registry:
+                if self.transparency_suite.consent_registry[tx.sender] != "approved":
+                    print(f"Transaction from {tx.sender} not approved for mining.")
+                    self.blockchain.mempool.remove(tx)
+        # Proceed with mining
+        self.blockchain.mine_block()
+
+    def sync_with_peers(self):
+        for peer in self.peers:
+            self.replace_chain_if_needed(peer.blockchain)
+
+    def replace_chain_if_needed(self, new_chain):
+        # Replace chain if new chain is longer and valid
+        if len(new_chain.chain) > len(self.blockchain.chain) and new_chain.is_chain_valid():
+            print(f"Node {self.node_id} replaced its chain with a longer one from a peer.")
+            self.blockchain = copy.deepcopy(new_chain)
+
+    def perform_audit(self):
+        # Use the ComplianceAuditToolkit to audit the blockchain
+        self.audit_toolkit.audit(self.blockchain)
+
+# Testing enhanced blockchain simulation
+if __name__ == "__main__":
+    # Create enhanced blockchain nodes
+    node_A = BlockchainNodeEnhanced("A", difficulty=2)
+    node_B = BlockchainNodeEnhanced("B", difficulty=2)
+    node_C = BlockchainNodeEnhanced("C", difficulty=2)
+
+    # Establish peer connections
+    node_A.add_peer(node_B)
+    node_A.add_peer(node_C)
+    node_B.add_peer(node_A)
+    node_B.add_peer(node_C)
+    node_C.add_peer(node_A)
+    node_C.add_peer(node_B)
+
+    # Generate some transactions
+    transactions = [
+        Transaction("Alice", "Bob", 10),
+        Transaction("Charlie", "David", 20),
+        Transaction("Eve", "Frank", 50)
+    ]
+
+    # Add user consent for some transactions in Transparency Suite
+    node_A.transparency_suite.add_consent("Alice", "approved")
+    node_A.transparency_suite.add_consent("Charlie", "approved")
+
+    # Nodes receive transactions
+    for tx in transactions:
+        node_A.receive_transaction(tx)
+        time.sleep(0.5)
+
+    # Nodes mine blocks
+    node_A.mine_block()
+    node_B.mine_block()
+    node_C.mine_block()
+
+    # Perform compliance audit
+    node_A.perform_audit()
+
+    # Simulate right to be forgotten
+    tx_to_nullify = "Charlie_to_David"
+    node_A.erasure_guard.nullify_data(tx_to_nullify)
+
+    # Final state of each blockchain
+    for node in [node_A, node_B, node_C]:
+        print(f"\nFinal blockchain for Node {node.node_id}:")
+        for block in node.blockchain.chain:
+            print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+
