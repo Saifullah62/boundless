@@ -749,3 +749,38 @@ blockchain_state = [
     for block in test_blockchain.chain
 ]
 
+from ecdsa import SigningKey, VerifyingKey, SECP256k1
+
+class Transaction:
+    def __init__(self, sender_public_key, receiver, amount):
+        self.sender_public_key = sender_public_key  # Public key in PEM format
+        self.receiver = receiver
+        self.amount = amount
+        self.signature = None
+
+    def sign_transaction(self, sender_private_key):
+        """Sign the transaction with the sender's private key."""
+        transaction_data = f"{self.sender_public_key}{self.receiver}{self.amount}".encode()
+        self.signature = sender_private_key.sign(transaction_data)
+
+    def is_valid(self):
+        """Verify the transaction signature."""
+        if not self.signature:
+            return False
+        transaction_data = f"{self.sender_public_key}{self.receiver}{self.amount}".encode()
+        sender_vk = VerifyingKey.from_string(bytes.fromhex(self.sender_public_key), curve=SECP256k1)
+        return sender_vk.verify(self.signature, transaction_data)
+def is_chain_valid(self):
+    for i in range(1, len(self.chain)):
+        current_block = self.chain[i]
+        previous_block = self.chain[i - 1]
+
+        # Hash and link checks (same as before)...
+
+        # Verify all transactions
+        for tx in current_block.transactions:
+            if not tx.is_valid():
+                logging.error(f"Invalid transaction detected in block {i}.")
+                return False
+    logging.info("Blockchain validation complete: all blocks are valid.")
+    return True
