@@ -673,9 +673,7 @@ class Blockchain:
         self.pending_transactions = []
 
     def is_chain_valid(self):
-        """
-        Validates the blockchain by checking hashes, previous hashes, and other integrity checks.
-        """
+        """Validates the blockchain by checking hashes, previous hashes, and other integrity checks."""
         for i in range(1, len(self.chain)):
             current_block = self.chain[i]
             previous_block = self.chain[i - 1]
@@ -702,6 +700,7 @@ class Blockchain:
 
 # Testing the enhanced blockchain with added validation
 # Instantiate blockchain
+
 test_blockchain = Blockchain(difficulty=2)
 
 # Create and add transactions to blockchain
@@ -718,6 +717,7 @@ transaction2 = Transaction(
 )
 
 # Adding transactions to the blockchain
+
 test_blockchain.add_transaction(transaction1)
 test_blockchain.add_transaction(transaction2)
 
@@ -749,6 +749,3 @@ blockchain_state = [
     for block in test_blockchain.chain
 ]
 
-import pandas as pd
-blockchain_df = pd.DataFrame(blockchain_state)
-print(blockchain_df)
