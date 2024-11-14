@@ -77,8 +77,18 @@ venv.bak/
 test_blockchain.json
 blockchain.json
 
+# Log Files
+*.log
+blockchain.log
+
+# SSL/TLS Certificates
+server.crt
+server.key
+
 # Optional: Docker Compose Override
 docker-compose.override.yml
 
-# Ignore .env file
-.env
+# Dependency Management Files
+Pipfile
+Pipfile.lock
+poetry.lock
