@@ -725,3 +725,105 @@ class Blockchain:
     def is_chain_valid(self):
         """Validates the blockchain using cached and parallel validation."""
         return self.validate_chain_in_parallel()
+def broadcast_transaction(self, transaction):
+    """Broadcasts a new transaction to all known peers with error handling."""
+    transaction_data = json.dumps(transaction.to_dict())
+    failed_peers = []
+
+    for peer in self.peers:
+        try:
+            with socket.create_connection((peer, PORT)) as sock:
+                context = ssl.create_default_context()
+                with context.wrap_socket(sock, server_hostname=peer) as s:
+                    s.sendall(f"NEW_TRANSACTION|{transaction_data}".encode())
+                    logging.info(f"Broadcasted transaction to {peer}")
+        except Exception as e:
+            logging.error(f"Failed to broadcast transaction to {peer}: {e}")
+            failed_peers.append(peer)
+
+    # Remove consistently failing peers
+    for peer in failed_peers:
+        self.peers.remove(peer)
+        logging.info(f"Removed unresponsive peer: {peer}")
+
+def broadcast_block(self, block):
+    """Broadcasts a new block to all known peers with error handling."""
+    block_data = json.dumps(self.block_to_dict(block))
+    failed_peers = []
+
+    for peer in self.peers:
+        try:
+            with socket.create_connection((peer, PORT)) as sock:
+                context = ssl.create_default_context()
+                with context.wrap_socket(sock, server_hostname=peer) as s:
+                    s.sendall(f"NEW_BLOCK|{block_data}".encode())
+                    logging.info(f"Broadcasted block to {peer}")
+        except Exception as e:
+            logging.error(f"Failed to broadcast block to {peer}: {e}")
+            failed_peers.append(peer)
+
+    # Remove unresponsive peers
+    for peer in failed_peers:
+        self.peers.remove(peer)
+        logging.info(f"Removed unresponsive peer: {peer}")
+def calculate_chain_hash(self):
+    """Calculates a hash representing the entire blockchain for integrity checks."""
+    chain_data = "".join([block.hash for block in self.chain])
+    return hashlib.sha256(chain_data.encode()).hexdigest()
+
+def sync_with_peer(self, peer):
+    """Synchronizes blockchain data with a peer, checking data integrity."""
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((peer, PORT)) as sock:
+            with context.wrap_socket(sock, server_hostname=peer) as s:
+                s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                data = b""
+                while True:
+                    part = s.recv(BUFFER_SIZE)
+                    if not part:
+                        break
+                    data += part
+
+                received_chain = json.loads(data.decode())
+                received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+
+                # Calculate hash of received chain
+                received_chain_hash = hashlib.sha256("".join([block.hash for block in received_chain_objects]).encode()).hexdigest()
+                local_chain_hash = self.calculate_chain_hash()
+
+                if received_chain_hash != local_chain_hash and len(received_chain_objects) > len(self.chain):
+                    logging.info("Replacing local blockchain with the received chain due to valid integrity check.")
+                    self.chain = received_chain_objects
+                    self.save_chain()
+                else:
+                    logging.info("Blockchain data from peer is invalid or not longer. No update performed.")
+
+    except (socket.error, json.JSONDecodeError, Exception) as e:
+        logging.error(f"Error syncing blockchain data from {peer}: {e}")
+from collections import defaultdict
+
+# Updated rate limit structure with per-command tracking
+rate_limit_tracker = defaultdict(lambda: defaultdict(list))
+
+def rate_limit_check(ip, command):
+    """Check if the given IP address exceeds the rate limit for a specific command."""
+    current_time = datetime.now()
+    request_times = rate_limit_tracker[ip][command]
+    
+    # Remove outdated requests
+    rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
+    
+    # Check current rate
+    if len(rate_limit_tracker[ip][command]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+    
+    # Log new request
+    rate_limit_tracker[ip][command].append(current_time)
+    return True
+
+# Example usage in server code
+if not rate_limit_check(address[0], "NEW_TRANSACTION"):
+    logging.warning(f"Rate limit exceeded for NEW_TRANSACTION by {address[0]}")
+    client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+    continue
