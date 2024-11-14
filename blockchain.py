@@ -818,4 +818,3 @@ if __name__ == "__main__":
         print(f"\nFinal blockchain for Node {node.node_id}:")
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
-
