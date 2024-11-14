@@ -10,6 +10,8 @@ import ssl
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
+import heapq
+import threading
 
 # Third-party imports
 from cryptography.hazmat.primitives import serialization, hashes
@@ -143,6 +145,12 @@ class Blockchain:
         self.load_chain()
         self.block_times = []  # Track mining times for blocks
         self.peers = set()  # Set of known peer addresses (e.g., 'IP:PORT')
+        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
+
+        # Start peer discovery in a separate thread
+        discovery_thread = threading.Thread(target=self.peer_discovery)
+        discovery_thread.daemon = True
+        discovery_thread.start()
 
     def create_genesis_block(self):
         """Creates the first block in the blockchain."""
@@ -152,20 +160,41 @@ class Blockchain:
         """Returns the latest block in the blockchain."""
         return self.chain[-1]
 
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool with an optional fee for prioritization."""
+        # Validate transaction signature
+        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
+            return False
+
+        # Use fee and timestamp to prioritize transactions in the mempool
+        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
+        heapq.heappush(self.mempool, (priority, transaction))
+        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
+        return True
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+        return selected_transactions
+
     def add_block(self, new_block):
         """Adds a new block to the blockchain after mining it."""
+        # Select high-priority transactions for the new block
+        new_block.transactions = self.select_transactions_for_block()
+
         new_block.previous_hash = self.get_latest_block().hash
         start_time = time.time()
         new_block.mine_block(self.difficulty)
         end_time = time.time()
 
-        # Record mining duration
         self.block_times.append(end_time - start_time)
         logging.info(f"Block {new_block.index} mined in {end_time - start_time:.2f} seconds with difficulty {self.difficulty}")
 
-        # Adjust difficulty based on average block time over last 10 blocks
         self.adjust_difficulty()
-
         self.chain.append(new_block)
         self.save_chain()
 
@@ -436,9 +465,6 @@ def rate_limit_check(ip, command):
     rate_limit_tracker[ip][command].append(current_time)
     return True
 
-import random
-import threading
-
 class Blockchain:
     def __init__(self, difficulty=2, filename="blockchain.json"):
         self.chain = [self.create_genesis_block()]
@@ -454,515 +480,6 @@ class Blockchain:
         discovery_thread.daemon = True
         discovery_thread.start()
 
-    def add_transaction(self, transaction, fee=0):
-        """Adds a transaction to the mempool with an optional fee for prioritization."""
-        # Validate transaction signature
-        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
-            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
-            return False
-
-        # Use fee and timestamp to prioritize transactions in the mempool
-        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
-        heapq.heappush(self.mempool, (priority, transaction))
-        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
-        return True
-
-    def select_transactions_for_block(self, max_transactions=10):
-        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
-        selected_transactions = []
-        while self.mempool and len(selected_transactions) < max_transactions:
-            _, transaction = heapq.heappop(self.mempool)
-            selected_transactions.append(transaction)
-        return selected_transactions
-
-    def add_block(self, new_block):
-        """Adds a new block to the blockchain after mining it."""
-        # Select high-priority transactions for the new block
-        new_block.transactions = self.select_transactions_for_block()
-
-        new_block.previous_hash = self.get_latest_block().hash
-        start_time = time.time()
-        new_block.mine_block(self.difficulty)
-        end_time = time.time()
-
-        self.block_times.append(end_time - start_time)
-        logging.info(f"Block {new_block.index} mined in {end_time - start_time:.2f} seconds with difficulty {self.difficulty}")
-
-        self.adjust_difficulty()
-        self.chain.append(new_block)
-        self.save_chain()
-
-    def get_mempool_transactions(self):
-        """Returns the list of transactions currently in the mempool."""
-        return [tx for _, tx in self.mempool]
-
-
-def start_server(blockchain):
-    """Starts a server to listen for blockchain requests from peers."""
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-        server.bind(("0.0.0.0", PORT))
-        server.listen(5)
-        with context.wrap_socket(server, server_side=True) as tls_server:
-            logging.info(f"Blockchain server listening on port {PORT} with TLS")
-
-            while True:
-                try:
-                    client_socket, address = tls_server.accept()
-                    with client_socket:
-                        if not rate_limit_check(address[0], "NEW_TRANSACTION"):
-                            logging.warning(f"Rate limit exceeded for {address[0]}")
-                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
-                            continue
-
-                        request = client_socket.recv(BUFFER_SIZE).decode()
-                        request_parts = request.split("|")
-
-                        # Handle different requests
-                        if request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
-                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
-                            client_socket.sendall(blockchain_data.encode())
-                            logging.info(f"Sent blockchain to peer at {address}")
-
-                        elif request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
-                            peer_list = ",".join(blockchain.peers)
-                            client_socket.sendall(peer_list.encode())
-                            logging.info(f"Sent peer list to peer at {address}")
-
-                        elif request_parts[0] == "NEW_TRANSACTION":
-                            # Deserialize transaction and add to mempool
-                            transaction_data = json.loads(request_parts[1])
-                            transaction = Transaction(**transaction_data)
-                            if blockchain.add_transaction(transaction):
-                                logging.info(f"Received and added new transaction from {address}")
-                            else:
-                                logging.warning(f"Failed to add transaction from {address}")
-
-                        elif request_parts[0] == "NEW_BLOCK":
-                            # Deserialize block and validate
-                            block_data = json.loads(request_parts[1])
-                            new_block = blockchain.dict_to_block(block_data)
-                            if blockchain.is_block_valid(new_block):
-                                blockchain.add_block(new_block)
-                                logging.info(f"Received and added new block from {address}")
-                            else:
-                                logging.warning(f"Invalid block received from {address}")
-
-                        elif request_parts[0] == "HANDSHAKE":
-                            # Basic handshake for compatibility check
-                            client_socket.sendall(b"HANDSHAKE_OK")
-                            logging.info(f"Handshake successful with {address}")
-
-                        else:
-                            logging.warning(f"Unauthorized access attempt from {address}")
-                            client_socket.sendall(b"ACCESS_DENIED")
-                except Exception as e:
-                    logging.error(f"Error handling client connection: {e}")
-
-# Adding enhanced functionality to simulate modules like GeoSovereign, RegBlock, and others.
-
-import copy
-import random
-
-class GeoSovereign:
-    """Handles geographical data compliance."""
-    def detect_data_origin(self, transaction):
-        # Simulating detection of geographical origin based on sender information
-        regions = ["US", "EU", "ASIA"]
-        return random.choice(regions)
-
-class RegBlock:
-    """Applies regulatory compliance based on GeoSovereign data."""
-    def apply_regulations(self, region):
-        if region == "US":
-            print("Applying US data regulations.")
-        elif region == "EU":
-            print("Applying GDPR compliance.")
-        elif region == "ASIA":
-            print("Applying regional Asia-Pacific data laws.")
-        # Additional rules could be added for specific compliance needs
-
-class TransparencySuite:
-    """Tracks user consent for data usage."""
-    def __init__(self):
-        self.consent_registry = {}
-
-    def add_consent(self, user, consent_type):
-        self.consent_registry[user] = consent_type
-        print(f"User {user} consented to {consent_type} usage.")
-
-    def revoke_consent(self, user):
-        if user in self.consent_registry:
-            del self.consent_registry[user]
-            print(f"User {user} revoked their consent.")
-
-class ErasureGuard:
-    """Simulates the 'right to be forgotten' for blockchain transactions."""
-    def __init__(self):
-        self.nullified_transactions = set()
-
-    def nullify_data(self, transaction_id):
-        self.nullified_transactions.add(transaction_id)
-        print(f"Transaction {transaction_id} has been nullified.")
-
-    def is_data_nullified(self, transaction_id):
-        return transaction_id in self.nullified_transactions
-
-class ComplianceAuditToolkit:
-    """Performs audits and monitors compliance of the blockchain."""
-    def audit(self, blockchain):
-        print("Performing compliance audit...")
-        for block in blockchain.chain:
-            for tx in block.transactions:
-                # Placeholder for checking compliance
-                print(f"Audit Check: Transaction from {tx.sender} to {tx.receiver}, Amount: {tx.amount}")
-
-# Integrating modules into the blockchain simulation
-class BlockchainNodeEnhanced:
-    def __init__(self, node_id, difficulty=2):
-        self.node_id = node_id
-        self.blockchain = Blockchain(difficulty=difficulty)
-        self.geosovereign = GeoSovereign()
-        self.regblock = RegBlock()
-        self.transparency_suite = TransparencySuite()
-        self.erasure_guard = ErasureGuard()
-        self.audit_toolkit = ComplianceAuditToolkit()
-        self.peers = []  # List of peer nodes
-
-    def add_peer(self, peer_node):
-        self.peers.append(peer_node)
-
-    def receive_transaction(self, transaction):
-        # Determine geographic region
-        region = self.geosovereign.detect_data_origin(transaction)
-        # Apply regulatory compliance based on detected region
-        self.regblock.apply_regulations(region)
-        # Add transaction to the blockchain's mempool
-        self.blockchain.add_transaction(transaction)
-
-    def mine_block(self):
-        # Before mining, check all transactions for user consent via Transparency Suite
-        for tx in self.blockchain.mempool:
-            if tx.sender in self.transparency_suite.consent_registry:
-                if self.transparency_suite.consent_registry[tx.sender] != "approved":
-                    print(f"Transaction from {tx.sender} not approved for mining.")
-                    self.blockchain.mempool.remove(tx)
-        # Proceed with mining
-        self.blockchain.mine_block()
-
-    def sync_with_peers(self):
-        for peer in self.peers:
-            self.replace_chain_if_needed(peer.blockchain)
-
-    def replace_chain_if_needed(self, new_chain):
-        # Replace chain if new chain is longer and valid
-        if len(new_chain.chain) > len(self.blockchain.chain) and new_chain.is_chain_valid():
-            print(f"Node {self.node_id} replaced its chain with a longer one from a peer.")
-            self.blockchain = copy.deepcopy(new_chain)
-
-    def perform_audit(self):
-        # Use the ComplianceAuditToolkit to audit the blockchain
-        self.audit_toolkit.audit(self.blockchain)
-
-# Testing enhanced blockchain simulation
-if __name__ == "__main__":
-    # Create enhanced blockchain nodes
-    node_A = BlockchainNodeEnhanced("A", difficulty=2)
-    node_B = BlockchainNodeEnhanced("B", difficulty=2)
-    node_C = BlockchainNodeEnhanced("C", difficulty=2)
-
-    # Establish peer connections
-    node_A.add_peer(node_B)
-    node_A.add_peer(node_C)
-    node_B.add_peer(node_A)
-    node_B.add_peer(node_C)
-    node_C.add_peer(node_A)
-    node_C.add_peer(node_B)
-
-    # Generate some transactions
-    transactions = [
-        Transaction("Alice", "Bob", 10),
-        Transaction("Charlie", "David", 20),
-        Transaction("Eve", "Frank", 50)
-    ]
-
-    # Add user consent for some transactions in Transparency Suite
-    node_A.transparency_suite.add_consent("Alice", "approved")
-    node_A.transparency_suite.add_consent("Charlie", "approved")
-
-    # Nodes receive transactions
-    for tx in transactions:
-        node_A.receive_transaction(tx)
-        time.sleep(0.5)
-
-    # Nodes mine blocks
-    node_A.mine_block()
-    node_B.mine_block()
-    node_C.mine_block()
-
-    # Perform compliance audit
-    node_A.perform_audit()
-
-    # Simulate right to be forgotten
-    tx_to_nullify = "Charlie_to_David"
-    node_A.erasure_guard.nullify_data(tx_to_nullify)
-
-    # Final state of each blockchain
-    for node in [node_A, node_B, node_C]:
-        print(f"\nFinal blockchain for Node {node.node_id}:")
-        for block in node.blockchain.chain:
-            print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
-import mmap
-import os
-import json
-
-class BlockchainWithMmap:
-    def __init__(self, filename='blockchain_mmap.bin'):
-        self.filename = filename
-        # Ensure the file exists to prevent errors
-        if not os.path.exists(self.filename):
-            with open(self.filename, 'wb') as f:
-                f.write(b'')  # Initialize the file with an empty binary content
-
-    def save_block_to_file(self, block):
-        # Serialize the block to a JSON string and convert to bytes
-        block_data = json.dumps(block).encode('utf-8')
-
-        with open(self.filename, 'ab') as f:
-            # Write the length of the block data first, so we know how much to read
-            f.write(len(block_data).to_bytes(4, byteorder='little'))
-            f.write(block_data)
-
-    def load_block_using_mmap(self, block_index):
-        with open(self.filename, 'r+b') as f:
-            # Memory-map the file, size 0 means the entire file
-            mmapped_file = mmap.mmap(f.fileno(), 0)
-
-            current_pos = 0
-            current_block_index = 0
-
-            # Iterate over the mapped file to find the desired block
-            while current_pos < mmapped_file.size():
-                # Read the size of the next block (4 bytes)
-                block_size_bytes = mmapped_file[current_pos:current_pos + 4]
-                block_size = int.from_bytes(block_size_bytes, byteorder='little')
-
-                # Move to the start of the block data
-                current_pos += 4
-
-                if current_block_index == block_index:
-                    # Read the block data of the given size
-                    block_data = mmapped_file[current_pos:current_pos + block_size]
-                    block = json.loads(block_data.decode('utf-8'))
-                    mmapped_file.close()
-                    return block
-
-                # Move to the start of the next block
-                current_pos += block_size
-                current_block_index += 1
-
-            mmapped_file.close()
-            raise IndexError("Block index out of range.")
-
-# Example Usage
-blockchain = BlockchainWithMmap()
-
-# Adding a block
-example_block = {
-    "index": 1,
-    "previous_hash": "abc123",
-    "transactions": [{"sender": "Alice", "receiver": "Bob", "amount": 10}],
-    "timestamp": 1234567890,
-    "nonce": 0,
-    "merkle_root": "xyz789",
-    "hash": "def456"
-}
-blockchain.save_block_to_file(example_block)
-
-# Loading a block using mmap
-try:
-    loaded_block = blockchain.load_block_using_mmap(0)
-    print(f"Loaded Block: {loaded_block}")
-except IndexError as e:
-    print(e)
-import heapq
-import time
-import logging
-from collections import deque
-
-class Transaction:
-    def __init__(self, sender, receiver, amount, fee):
-        self.sender = sender
-        self.receiver = receiver
-        self.amount = amount
-        self.fee = fee
-        self.timestamp = time.time()
-
-    def __repr__(self):
-        return f"Transaction({self.sender} -> {self.receiver}: {self.amount}, Fee: {self.fee})"
-
-    def to_dict(self):
-        return {
-            "sender": self.sender,
-            "receiver": self.receiver,
-            "amount": self.amount,
-            "fee": self.fee,
-            "timestamp": self.timestamp
-        }
-
-class Blockchain:
-    def __init__(self, difficulty=2, filename="blockchain.json"):
-        self.chain = [self.create_genesis_block()]
-        self.difficulty = difficulty
-        self.filename = filename
-        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
-        self.max_mempool_size = 1000  # Limit the total number of transactions in the mempool
-        self.min_fee_threshold = 1  # Minimum fee to keep in mempool
-
-        # Using a deque for efficient removal of low-fee transactions periodically
-        self.transaction_deque = deque()
-        self.load_chain()
-
-    def create_genesis_block(self):
-        return {
-            "index": 0,
-            "previous_hash": "0",
-            "transactions": [],
-            "timestamp": time.time(),
-            "nonce": 0,
-            "hash": "genesis_hash"
-        }
-
-    def add_transaction(self, transaction):
-        """Adds a transaction to the mempool with prioritization."""
-        # Use fee and timestamp to prioritize transactions in the mempool (higher fee is prioritized)
-        priority = (-transaction.fee, transaction.timestamp)  # Negative fee for max-heap behavior using min-heap
-        
-        if len(self.mempool) >= self.max_mempool_size:
-            # Check if the new transaction is worth replacing an existing one
-            lowest_priority_tx = heapq.nsmallest(1, self.mempool)[0]
-            if priority > lowest_priority_tx[0]:
-                # Remove the lowest priority transaction
-                heapq.heappop(self.mempool)
-                self.transaction_deque.popleft()
-                logging.info(f"Removing lower priority transaction from mempool due to size limit.")
-
-        if len(self.mempool) < self.max_mempool_size:
-            # Add the new transaction
-            heapq.heappush(self.mempool, (priority, transaction))
-            self.transaction_deque.append(transaction)
-            logging.info(f"Transaction {transaction} added to mempool with fee {transaction.fee}.")
-        else:
-            logging.info(f"Transaction {transaction} not added - mempool is full and transaction fee is too low.")
-
-    def clear_low_fee_transactions(self):
-        """Removes low-fee transactions that have been in the mempool for a long time."""
-        current_time = time.time()
-        clear_count = 0
-
-        while self.transaction_deque:
-            oldest_transaction = self.transaction_deque[0]
-            if (current_time - oldest_transaction.timestamp > 300) or (oldest_transaction.fee < self.min_fee_threshold):
-                # Remove from deque and heap
-                self.transaction_deque.popleft()
-                self.mempool = [(priority, tx) for priority, tx in self.mempool if tx != oldest_transaction]
-                heapq.heapify(self.mempool)
-                clear_count += 1
-            else:
-                break
-
-        if clear_count > 0:
-            logging.info(f"Cleared {clear_count} low-fee or stale transactions from the mempool.")
-
-    def select_transactions_for_block(self, max_transactions=10):
-        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
-        selected_transactions = []
-        while self.mempool and len(selected_transactions) < max_transactions:
-            _, transaction = heapq.heappop(self.mempool)
-            self.transaction_deque.popleft()
-            selected_transactions.append(transaction)
-        return selected_transactions
-
-# Example Usage
-if __name__ == "__main__":
-    blockchain = Blockchain()
-
-    # Adding some transactions
-    transactions = [
-        Transaction("Alice", "Bob", 10, 5),
-        Transaction("Charlie", "David", 20, 2),
-        Transaction("Eve", "Frank", 15, 3),
-        Transaction("Alice", "Frank", 25, 1)
-    ]
-
-    for tx in transactions:
-        blockchain.add_transaction(tx)
-
-    # Simulate clearing low-fee transactions
-    time.sleep(1)  # Simulate some delay
-    blockchain.clear_low_fee_transactions()
-
-    # Add another high-priority transaction
-    high_priority_tx = Transaction("Zara", "Leo", 50, 10)
-    blockchain.add_transaction(high_priority_tx)
-
-    # Select transactions for the next block
-    selected_transactions = blockchain.select_transactions_for_block()
-    print(f"Selected Transactions for Block: {selected_transactions}")
-
-import heapq
-import time
-
-class Blockchain:
-    def __init__(self, difficulty=2, filename="blockchain.json", mempool_limit=100):
-        self.chain = [self.create_genesis_block()]
-        self.difficulty = difficulty
-        self.filename = filename
-        self.load_chain()
-        self.block_times = []
-        self.peers = set()
-        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
-        self.mempool_limit = mempool_limit  # Limit number of transactions in the mempool
-
-    def add_transaction(self, transaction, fee=0):
-        """Adds a transaction to the mempool with an optional fee for prioritization."""
-        # Validate transaction signature
-        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
-            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
-            return False
-
-        # Enforce the mempool limit
-        if len(self.mempool) >= self.mempool_limit:
-            # Compare new transaction fee with the lowest fee in the mempool
-            if fee <= -self.mempool[0][0]:
-                logging.info(f"Transaction {transaction} discarded because mempool is full and the fee is too low.")
-                return False
-            # Remove the lowest fee transaction to make space
-            heapq.heappop(self.mempool)
-            logging.info(f"Lowest fee transaction removed to add new transaction with higher fee.")
-
-        # Use fee and timestamp to prioritize transactions in the mempool
-        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
-        heapq.heappush(self.mempool, (priority, transaction))
-        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
-        return True
-
-    def select_transactions_for_block(self, max_transactions=10):
-        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
-        selected_transactions = []
-        while self.mempool and len(selected_transactions) < max_transactions:
-            _, transaction = heapq.heappop(self.mempool)
-            selected_transactions.append(transaction)
-        return selected_transactions
-
-    def get_mempool_transactions(self):
-        """Returns the list of transactions currently in the mempool."""
-        return [tx for _, tx in self.mempool]
-class Blockchain:
-    # Rest of the class remains the same...
-    
     def cleanup_mempool(self, max_age=600):
         """Removes transactions from the mempool that are older than a specified max age."""
         current_time = time.time()
@@ -988,7 +505,6 @@ class Blockchain:
         logging.info(f"Cleaned up {removed_count} old transactions from the mempool.")
 
 # Example usage to clean up old transactions every minute
-import threading
 
 def periodic_cleanup(blockchain, interval=60):
     """Periodically cleans up the mempool to remove old transactions."""
@@ -1001,3 +517,80 @@ blockchain = Blockchain(difficulty=2)
 cleanup_thread = threading.Thread(target=periodic_cleanup, args=(blockchain,))
 cleanup_thread.daemon = True
 cleanup_thread.start()
+
+from ecdsa import SigningKey, SECP256k1
+from hashlib import sha256
+import random
+
+class SchnorrSignature:
+    def __init__(self):
+        self.private_key = SigningKey.generate(curve=SECP256k1)
+        self.public_key = self.private_key.get_verifying_key()
+
+    def sign(self, message):
+        """Generate a Schnorr signature for a message."""
+        # Generate a random nonce
+        k = random.randint(1, SECP256k1.order)
+        R = k * SECP256k1.generator  # Commitment
+        r = R.x()  # The x-coordinate of R is used as part of the signature
+
+        # Compute the hash of R concatenated with the message
+        h = int(sha256((str(r) + message).encode()).hexdigest(), 16)
+
+        # Calculate the signature
+        s = (k + h * self.private_key.privkey.secret_multiplier) % SECP256k1.order
+        return (r, s)
+
+    def verify(self, message, signature):
+        """Verify a Schnorr signature for a message."""
+        r, s = signature
+        h = int(sha256((str(r) + message).encode()).hexdigest(), 16)
+
+        # Recalculate point from signature
+        R = (s * SECP256k1.generator) - (h * self.public_key.pubkey.point)
+        return R.x() == r
+
+# Example usage
+signer = SchnorrSignature()
+message = "This is a BSV batch verification example."
+signature = signer.sign(message)
+print(f"Signature valid: {signer.verify(message, signature)}")
+
+from ecdsa import VerifyingKey, SECP256k1
+
+class BatchVerifier:
+    def __init__(self):
+        self.public_keys = []
+        self.messages = []
+        self.signatures = []
+
+    def add_transaction(self, public_key, message, signature):
+        """Add a transaction's public key, message, and signature to the batch."""
+        self.public_keys.append(public_key)
+        self.messages.append(message)
+        self.signatures.append(signature)
+
+    def batch_verify(self):
+        """Perform a batch verification of all signatures."""
+        total_r = 0
+        total_s = 0
+        for public_key, message, (r, s) in zip(self.public_keys, self.messages, self.signatures):
+            h = int(sha256((str(r) + message).encode()).hexdigest(), 16)
+            total_r += h * public_key.pubkey.point
+            total_s += s
+
+        # Perform a single verification step with aggregated values
+        result = (total_s * SECP256k1.generator) == total_r
+        return result
+
+# Example batch usage
+batch = BatchVerifier()
+# Assuming we have multiple transactions with their public keys, messages, and Schnorr signatures
+for i in range(10):
+    signer = SchnorrSignature()
+    message = f"Transaction {i}"
+    signature = signer.sign(message)
+    batch.add_transaction(signer.public_key, message, signature)
+
+# Batch verify all transactions
+print(f"Batch verification result: {batch.batch_verify()}")
