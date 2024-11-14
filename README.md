@@ -1,102 +1,128 @@
-Boundless
+Blockchain Network with Compliance and AI-enhanced Security
 
-Boundless is a blockchain application designed to securely connect to a blockchain network, manage private keys with encryption, and perform transactions with best-in-class security practices. By leveraging environment variables and cryptographic standards, Boundless ensures sensitive data is handled safely and configurations are easily managed across environments.
+This repository provides an advanced blockchain network featuring peer-to-peer communication, compliance tracking, anomaly detection via machine learning, and AI-enhanced mining optimization. The codebase is equipped for regulatory compliance and implements privacy-preserving features like data encryption and user consent tracking.
 Features
 
-    Secure handling of private keys and API keys through environment variables.
-    Verification of required environment variables at startup to prevent configuration errors.
-    Adheres to cryptographic standards to ensure data integrity and security.
-
-Table of Contents
-
-    Requirements
-    Installation
-    Configuration
-    Usage
-    Running Tests
-    Best Practices
-    Troubleshooting
-    Contributing
-
-Requirements
-
-    Python 3.6+
-    pip (Python package installer)
+    Blockchain Core: Implements basic blockchain structures, including Blocks, Transactions, and a Merkle Tree.
+    Peer-to-Peer Networking: Nodes communicate, share blocks, and transactions through secure sockets using TLS.
+    Enhanced Compliance Tools: Modules for compliance checks, geographical origin detection, regulatory enforcement, and transaction nullification.
+    Anomaly Detection: Uses Isolation Forest for AI-based anomaly detection on transaction patterns.
+    Encrypted Data Storage: Transactions are encrypted using Fernet symmetric encryption.
+    Multi-signature Transactions: Supports multi-signature transactions, requiring multiple parties to validate.
+    Mining Optimization: Enhanced mining control for resource-efficient block creation.
 
 Installation
+Requirements
 
-    Clone the Repository:
+    Python 3.8+
 
-git clone https://github.com/your-username/boundless.git
-cd boundless
+    Required libraries (install with pip):
 
-Install Dependencies: Install the required Python packages listed in requirements.txt.
+    pip install cryptography pyopenssl numpy scikit-learn
 
-    pip install -r requirements.txt
+Setting Up the Environment
 
-Configuration
+    SSL Certificates: Generate SSL certificates for secure peer-to-peer communication:
 
-    Environment Variables: Boundless uses environment variables for sensitive information and network configurations. These variables are stored in a .env file located in the root directory.
+openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365
 
-    Create a .env File: In the root of the project, create a .env file and add the following variables:
+Environment Variables: Store an ACCESS_TOKEN in a .env file for secure peer authentication. This token verifies access permissions among peers.
 
-    NETWORK_URL=https://example-blockchain-node.com
-    API_KEY=your_api_key_here
-    ENCRYPTED_PRIVATE_KEY=your_encrypted_private_key_here
-    KEY_PASSWORD=your_password_here
-    DEBUG=True
+    ACCESS_TOKEN=your_secure_token_here
 
-        Note: Make sure .env is listed in .gitignore to prevent sensitive information from being pushed to version control.
+Structure Overview
 
-    Environment Variable Verification: Boundless checks that all required environment variables are set at startup. If any are missing, it raises an EnvironmentError with details about the missing variables, making it easy to troubleshoot configuration issues.
+The codebase contains the following main components:
 
-Usage
+    Blockchain Core: Core blockchain structures (Block, Blockchain, Merkle Tree).
+    Networking and P2P Communication: Server and client code for secure peer-to-peer connections and blockchain synchronization.
+    Compliance and Privacy Tools: GeoSovereign for detecting data origin, RegBlock for applying regional laws, TransparencySuite for consent tracking, and ErasureGuard for transaction nullification.
+    Machine Learning for Security: Anomaly detection using Isolation Forest to flag suspicious transactions.
+    Blockchain Nodes: Specialized nodes with varying functionalities—enhanced for compliance, encryption, and AI-based anomaly detection.
 
-To run the application, use the main Python file blockchain.py:
+Key Classes
+1. Blockchain Core
 
-python blockchain.py
+    Block: Represents a block, containing transactions, previous hash, Merkle root, and timestamp.
+    Transaction: Represents a transaction with methods for signing and verification.
+    Blockchain: Manages the chain of blocks, including block creation, validation, and mining.
 
-Example Code Snippet
+2. Compliance and Privacy Modules
 
-To call specific functions within Boundless, you can do so directly in blockchain.py. For example:
+    GeoSovereign: Detects the origin of transaction data and supports regional compliance.
+    RegBlock: Enforces compliance based on detected geographic origin (e.g., GDPR for EU transactions).
+    TransparencySuite: Tracks user consent for data usage, providing control over data privacy.
+    ErasureGuard: Supports "right to be forgotten" by nullifying specified transactions.
 
-from blockchain import connect_to_blockchain, sign_transaction
+3. Networking and Peer-to-Peer Communication
 
-# Example function call to connect to the blockchain
-connect_to_blockchain()
+    start_server: Starts a server to manage peer connections, handle transaction requests, and synchronize chains.
+    Peer-to-Peer Synchronization: Nodes share and synchronize their chains for consistency.
 
-# Example transaction signing
-sign_transaction("sample transaction data")
+4. Machine Learning Anomaly Detection
 
-Running Tests
+    Isolation Forest: Utilized within the BlockchainNodeAI class to detect anomalous transaction patterns.
+    Anomaly Detection Workflow: Converts transactions to numerical representations for model training and prediction.
 
-To test the application, ensure all environment variables are configured. Run the tests using:
+Usage Examples
+Initializing a Node
 
-python -m unittest discover -s tests
+node = BlockchainNodeAI("Node_A", difficulty=3)
 
-Best Practices
+Adding Peers
 
-    Security: Use a secure vault for sensitive environment variables in production. Encrypt .env files if they are stored on a shared server.
-    Dependency Management: Regularly update requirements.txt to the latest compatible versions.
-    Error Handling: Log errors for better debugging and traceability.
+node.add_peer("127.0.0.1:5001")
+node.add_peer("127.0.0.1:5002")
 
-Troubleshooting
+Generating Transactions
 
-    Missing Environment Variables: If you encounter an EnvironmentError, ensure all variables in the .env file are correctly set.
-    Connection Issues: Verify that NETWORK_URL and API_KEY are accurate and that your network allows access to the blockchain node.
-    Decryption Issues with Private Key: Double-check that ENCRYPTED_PRIVATE_KEY and KEY_PASSWORD are correct and match the application’s format expectations.
+transaction = Transaction("Alice", "Bob", 50)
+node.receive_transaction(transaction)
 
-Contributing
+Mining Blocks
 
-    Fork the repository.
-    Create a new branch with a descriptive name.
-    Commit your changes.
-    Submit a pull request.
+node.mine_block()
 
-Example .gitignore
+Synchronizing with Peers
 
-# Ignore .env file
-.env
-__pycache__/
-*.pyc
+node.sync_with_peers()
 
+Running Anomaly Detection
+
+The BlockchainNodeAI class automatically applies anomaly detection when transactions are received. Transactions flagged as anomalous are discarded before reaching the chain.
+Conducting Compliance Audits
+
+node.perform_audit()
+
+Running the Network
+
+To test the blockchain network, simulate multiple nodes by creating instances of BlockchainNodeSecure or BlockchainNodeAI. Each node instance can manage its blockchain, receive transactions, and sync with peers.
+Sample Simulation
+
+if __name__ == "__main__":
+    # Create nodes
+    node_A = BlockchainNodeSecure("Node_A", difficulty=2)
+    node_B = BlockchainNodeSecure("Node_B", difficulty=2)
+
+    # Add peers
+    node_A.add_peer(node_B)
+    node_B.add_peer(node_A)
+
+    # Generate and receive transactions
+    tx1 = Transaction("Alice", "Bob", 100)
+    node_A.receive_transaction(tx1)
+
+    # Mine blocks
+    node_A.mine_block()
+    node_B.mine_block()
+
+    # Synchronize chains
+    node_A.sync_with_peers()
+
+Advanced Modules
+
+The following are additional features for enhanced security and compliance:
+
+    Data Encryption: Encrypts transaction data with Fernet to protect data at rest.
+    Regulatory Compliance Simulation: Applies regulatory rules per region through RegBlock.
+    Data Audit: The ComplianceAuditToolkit provides an auditing mechanism for verifying chain transactions’ compliance status.
