@@ -715,3 +715,32 @@ if __name__ == "__main__":
         print(f"\nFinal blockchain for Node {node.node_id}:")
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
+
+class Transaction:
+    __slots__ = ['sender', 'receiver', 'amount', 'signature']
+    def __init__(self, sender, receiver, amount, private_key=None):
+        self.sender = sender
+        self.receiver = receiver
+        self.amount = amount
+        self.signature = None
+class MerkleTree:
+    """Constructs a Merkle Tree from a list of transactions."""
+    def __init__(self, transactions):
+        self.transactions = transactions
+        self.root = self.build_tree([self.hash_data(str(tx)) for tx in transactions])
+
+    @staticmethod
+    def hash_data(data):
+        """Hashes the given data using SHA-512."""
+        return hashlib.sha512(data.encode()).digest()  # Store hash as a byte array, not a hex string
+
+    def build_tree(self, leaves):
+        """Builds the Merkle Tree iteratively from the leaves."""
+        while len(leaves) > 1:
+            if len(leaves) % 2 == 1:
+                leaves.append(leaves[-1])  # Use a reference instead of a duplicate
+            parent_layer = [
+                self.hash_data(leaves[i] + leaves[i + 1]) for i in range(0, len(leaves), 2)
+            ]
+            leaves = parent_layer
+        return leaves[0] if leaves else None
