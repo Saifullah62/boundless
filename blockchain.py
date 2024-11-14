@@ -819,3 +819,22 @@ if __name__ == "__main__":
         for block in node.blockchain.chain:
             print(f"  Block {block.index} [Hash: {block.hash}, Prev: {block.previous_hash}, Transactions: {len(block.transactions)}]")
 
+except InvalidSignature:
+    logging.warning(f"Invalid signature for transaction from {self.sender} to {self.receiver}.")
+    return False
+except Exception as e:
+    logging.error(f"Error verifying signature: {e}")
+    return False
+if not rate_limit_check(address[0], "NEW_TRANSACTION"):
+    logging.warning(f"Rate limit exceeded for {address[0]}")
+    client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+    continue
+else:
+    logging.warning(f"Unauthorized access attempt from {address}")
+    client_socket.sendall(b"ACCESS_DENIED")
+if self.is_valid_chain(received_chain_objects) and len(received_chain_objects) > len(self.chain):
+    logging.info("Replacing current blockchain with the received chain.")
+    self.chain = received_chain_objects
+    self.save_chain()
+else:
+    logging.info("Received blockchain is not valid or shorter. No update performed.")
