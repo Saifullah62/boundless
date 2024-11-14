@@ -827,3 +827,96 @@ if not rate_limit_check(address[0], "NEW_TRANSACTION"):
     logging.warning(f"Rate limit exceeded for NEW_TRANSACTION by {address[0]}")
     client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
     continue
+def compare_chains(local_chain, new_chain):
+    """Compares two chains and returns the preferred one.
+    
+    If new_chain is longer or has higher cumulative difficulty,
+    it is selected. Otherwise, local_chain is preferred.
+    """
+    if len(new_chain) > len(local_chain):
+        return new_chain
+    elif len(new_chain) == len(local_chain):
+        # Tie-breaking: Select chain with highest cumulative difficulty
+        local_difficulty = sum(block.difficulty for block in local_chain)
+        new_difficulty = sum(block.difficulty for block in new_chain)
+        
+        if new_difficulty > local_difficulty:
+            return new_chain
+        # Additional tie-breaking using the latest block timestamp
+        elif new_difficulty == local_difficulty:
+            if new_chain[-1].timestamp < local_chain[-1].timestamp:
+                return new_chain
+    return local_chain
+def replace_chain(self, new_chain):
+    """Attempts to replace the local chain with a new chain after evaluation.
+    
+    Saves the current chain as a rollback option if the new chain is preferred.
+    """
+    preferred_chain = compare_chains(self.chain, new_chain)
+    
+    if preferred_chain != self.chain:
+        # Save the current chain state in case rollback is needed
+        self.rollback_chain = list(self.chain)  # Deep copy of current chain
+        
+        # Replace the chain with the new one
+        self.chain = new_chain
+        self.save_chain()
+        logging.info("Chain replaced with a preferred chain from peer.")
+    else:
+        logging.info("Received chain is not preferred; no replacement done.")
+
+def rollback_chain(self):
+    """Restores the previous chain if the current chain is invalidated."""
+    if hasattr(self, 'rollback_chain'):
+        self.chain = self.rollback_chain
+        del self.rollback_chain
+        self.save_chain()
+        logging.info("Chain rolled back to previous state.")
+def request_chain_from_peers(self):
+    """Requests chains from multiple peers and selects the most common chain."""
+    peer_chains = []
+
+    for peer in self.peers:
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((peer, PORT)) as sock:
+                with context.wrap_socket(sock, server_hostname=peer) as s:
+                    s.sendall(f"REQUEST_BLOCKCHAIN|{ACCESS_TOKEN}".encode())
+                    data = b""
+                    while True:
+                        part = s.recv(BUFFER_SIZE)
+                        if not part:
+                            break
+                        data += part
+
+                    received_chain = json.loads(data.decode())
+                    received_chain_objects = [self.dict_to_block(block) for block in received_chain]
+                    peer_chains.append(received_chain_objects)
+
+        except (socket.error, json.JSONDecodeError, Exception) as e:
+            logging.error(f"Failed to retrieve chain from {peer}: {e}")
+
+    # Find the most common chain among peers
+    return self.select_most_common_chain(peer_chains)
+
+def select_most_common_chain(self, peer_chains):
+    """Selects the most common chain among peer chains based on majority rule."""
+    chain_counts = {}
+    
+    for chain in peer_chains:
+        chain_hash = hashlib.sha256("".join(block.hash for block in chain).encode()).hexdigest()
+        if chain_hash in chain_counts:
+            chain_counts[chain_hash]['count'] += 1
+        else:
+            chain_counts[chain_hash] = {'count': 1, 'chain': chain}
+    
+    # Select the chain with the highest count (consensus)
+    most_common_chain = max(chain_counts.values(), key=lambda x: x['count'])['chain']
+    return most_common_chain
+def sync_with_peer(self):
+    """Syncs the blockchain with peers, using multi-round consensus for forks."""
+    # Request chains from peers and determine the most common one
+    preferred_chain = self.request_chain_from_peers()
+
+    # If a preferred chain is found, evaluate and replace if needed
+    self.replace_chain(preferred_chain)
