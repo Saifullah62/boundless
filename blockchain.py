@@ -749,38 +749,152 @@ blockchain_state = [
     for block in test_blockchain.chain
 ]
 
-from ecdsa import SigningKey, VerifyingKey, SECP256k1
+import hashlib
+import os
 
-class Transaction:
-    def __init__(self, sender_public_key, receiver, amount):
-        self.sender_public_key = sender_public_key  # Public key in PEM format
+class MerkleTree:
+    """Constructs a Merkle Tree from a list of transactions."""
+    def __init__(self, transactions):
+        self.transactions = transactions
+        self.root = self.build_tree([self.hash_data(str(tx)) for tx in transactions])
+
+    @staticmethod
+    def hash_data(data):
+        """Hashes the given data using SHA-512 with a random salt."""
+        salt = os.urandom(16)
+        return hashlib.sha512(salt + data.encode()).hexdigest()
+
+    def build_tree(self, leaves):
+        """Builds the Merkle Tree iteratively from the leaves."""
+        while len(leaves) > 1:
+            # Duplicate the last leaf if odd number of leaves
+            if len(leaves) % 2 == 1:
+                leaves.append(leaves[-1])
+            # Pair and hash leaves to create the parent layer
+            parent_layer = [self.hash_data(leaves[i] + leaves[i + 1]) for i in range(0, len(leaves), 2)]
+            leaves = parent_layer
+        return leaves[0] if leaves else None
+import socket
+import ssl
+import json
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+PORT = 5000
+BUFFER_SIZE = 4096
+RATE_LIMIT_WINDOW = timedelta(seconds=10)
+MAX_REQUESTS_PER_WINDOW = 5
+rate_limit_tracker = defaultdict(lambda: defaultdict(list))
+
+def rate_limit_check(ip, command):
+    """Check if a given IP exceeds the rate limit for a specific command."""
+    current_time = datetime.now()
+    request_times = rate_limit_tracker[ip][command]
+    rate_limit_tracker[ip][command] = [t for t in request_times if current_time - t < RATE_LIMIT_WINDOW]
+    if len(rate_limit_tracker[ip][command]) >= MAX_REQUESTS_PER_WINDOW:
+        return False
+    rate_limit_tracker[ip][command].append(current_time)
+    return True
+
+def start_server(blockchain):
+    """Starts a secure server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+    
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            while True:
+                client_socket, address = tls_server.accept()
+                if not rate_limit_check(address[0], "NEW_TRANSACTION"):
+                    client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                    continue
+                # Handle requests as needed, such as sending the blockchain or processing transactions
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes
+
+class MultiSigTransaction:
+    """Represents a multi-signature transaction."""
+    def __init__(self, sender, receiver, amount, required_signatures=2):
+        self.sender = sender
         self.receiver = receiver
         self.amount = amount
-        self.signature = None
+        self.signatures = []
+        self.required_signatures = required_signatures
 
-    def sign_transaction(self, sender_private_key):
-        """Sign the transaction with the sender's private key."""
-        transaction_data = f"{self.sender_public_key}{self.receiver}{self.amount}".encode()
-        self.signature = sender_private_key.sign(transaction_data)
+    def sign_transaction(self, private_key):
+        """Signs the transaction using a private key."""
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
+        self.signatures.append(signature)
 
-    def is_valid(self):
-        """Verify the transaction signature."""
-        if not self.signature:
-            return False
-        transaction_data = f"{self.sender_public_key}{self.receiver}{self.amount}".encode()
-        sender_vk = VerifyingKey.from_string(bytes.fromhex(self.sender_public_key), curve=SECP256k1)
-        return sender_vk.verify(self.signature, transaction_data)
-def is_chain_valid(self):
-    for i in range(1, len(self.chain)):
-        current_block = self.chain[i]
-        previous_block = self.chain[i - 1]
+    def verify_signatures(self, public_keys):
+        """Verify required number of valid signatures."""
+        valid_signatures = 0
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        for public_key, signature in zip(public_keys, self.signatures):
+            try:
+                public_key.verify(signature, transaction_data, ec.ECDSA(hashes.SHA256()))
+                valid_signatures += 1
+                if valid_signatures >= self.required_signatures:
+                    return True
+            except:
+                continue
+        return False
+import random
 
-        # Hash and link checks (same as before)...
+class GeoSovereign:
+    """Handles geographical data compliance."""
+    def detect_data_origin(self, transaction):
+        regions = ["US", "EU", "ASIA"]
+        return random.choice(regions)
 
-        # Verify all transactions
-        for tx in current_block.transactions:
-            if not tx.is_valid():
-                logging.error(f"Invalid transaction detected in block {i}.")
-                return False
-    logging.info("Blockchain validation complete: all blocks are valid.")
-    return True
+class RegBlock:
+    """Applies regulatory compliance based on geographic data."""
+    def apply_regulations(self, region):
+        if region == "US":
+            print("Applying US data regulations.")
+        elif region == "EU":
+            print("Applying GDPR compliance.")
+        elif region == "ASIA":
+            print("Applying Asia-Pacific data regulations.")
+
+class TransparencySuite:
+    """Tracks user consent for data usage."""
+    def __init__(self):
+        self.consent_registry = {}
+
+    def add_consent(self, user, consent_type):
+        self.consent_registry[user] = consent_type
+
+    def revoke_consent(self, user):
+        if user in self.consent_registry:
+            del self.consent_registry[user]
+
+class ErasureGuard:
+    """Handles data nullification for the 'right to be forgotten'."""
+    def __init__(self):
+        self.nullified_transactions = set()
+
+    def nullify_data(self, transaction_id):
+        self.nullified_transactions.add(transaction_id)
+import heapq
+import time
+
+class Blockchain:
+    def __init__(self):
+        self.mempool = []
+
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool with a fee for prioritization."""
+        priority = (-fee, time.time())
+        heapq.heappush(self.mempool, (priority, transaction))
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects high-priority transactions for the next block."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+        return selected_transactions
