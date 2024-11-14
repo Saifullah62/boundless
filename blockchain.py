@@ -306,6 +306,80 @@ class Blockchain:
                 if not transaction.verify_signature(self.get_public_key(transaction.sender)):
                     return False
         return True
+def is_chain_valid(self):
+    """Optimized method to validate the blockchain."""
+    # Set a checkpoint interval (e.g., every 100 blocks).
+    checkpoint_interval = 100
+
+    for i in range(1, len(self.chain)):
+        current_block = self.chain[i]
+        previous_block = self.chain[i - 1]
+        
+        # 1. Verify block hash integrity
+        if current_block.hash != current_block.calculate_hash():
+            logging.error(f"Invalid block at index {i}: hash mismatch.")
+            return False
+        if current_block.previous_hash != previous_block.hash:
+            logging.error(f"Invalid block at index {i}: previous hash mismatch.")
+            return False
+
+        # 2. Skip full validation for checkpointed blocks
+        if i % checkpoint_interval == 0:
+            logging.info(f"Checkpoint reached at block {i}.")
+            continue
+
+        # 3. Efficient Merkle Root Verification
+        merkle_tree = MerkleTree(current_block.transactions)
+        if merkle_tree.root != current_block.merkle_root:
+            logging.error(f"Merkle root mismatch at block {i}.")
+            return False
+
+    logging.info("Blockchain validation successful.")
+    return True
+class MultiSigTransaction:
+    """Represents a multi-signature transaction in the blockchain."""
+    def __init__(self, sender, receiver, amount, required_signatures=2):
+        self.sender = sender
+        self.receiver = receiver
+        self.amount = amount
+        self.signatures = []
+        self.required_signatures = required_signatures  # e.g., 2 out of 3 signatures required
+
+    def to_dict(self):
+        """Converts the transaction to a dictionary representation."""
+        return {
+            "sender": self.sender,
+            "receiver": self.receiver,
+            "amount": self.amount,
+            "signatures": [sig.hex() for sig in self.signatures]
+        }
+
+    def sign_transaction(self, private_key):
+        """Adds a signature from a private key."""
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+        signature = private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
+        self.signatures.append(signature)
+
+    def verify_signatures(self, public_keys):
+        """Verifies that the transaction has the required number of valid signatures."""
+        if len(self.signatures) < self.required_signatures:
+            return False
+        
+        valid_signatures = 0
+        transaction_data = f"{self.sender}{self.receiver}{self.amount}".encode()
+
+        for public_key, signature in zip(public_keys, self.signatures):
+            try:
+                public_key.verify(signature, transaction_data, ec.ECDSA(hashes.SHA256()))
+                valid_signatures += 1
+            except InvalidSignature:
+                continue
+
+            # Check if enough valid signatures are met
+            if valid_signatures >= self.required_signatures:
+                return True
+
+        return False
 
 # Server function for peer-to-peer communication
 
