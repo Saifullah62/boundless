@@ -251,7 +251,12 @@ class Blockchain:
             logging.error(f"Failed to load blockchain from file: {e}")
         except Exception as e:
             logging.error(f"Unexpected error while loading blockchain: {e}")
-
+            
+def cleanup_mempool(self):
+        """Placeholder for cleaning up the mempool."""
+        # Implement any necessary logic here
+        pass
+    
     @staticmethod
     def block_to_dict(block):
         """Converts a block to a dictionary representation."""
