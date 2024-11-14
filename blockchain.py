@@ -898,3 +898,13 @@ class Blockchain:
             _, transaction = heapq.heappop(self.mempool)
             selected_transactions.append(transaction)
         return selected_transactions
+class Blockchain:
+    """Represents the blockchain itself, managing the chain of blocks."""
+    def __init__(self, difficulty=2):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        # Other initialization code...
+
+    def create_genesis_block(self):
+        """Creates the first block in the blockchain."""
+        return Block(0, "0", [], nonce=0)
