@@ -1111,3 +1111,14 @@ class Block:
         while self.hash[:difficulty] != target:
             self.nonce += 1
             self.hash = self.calculate_hash()
+
+def create_socket(peer):
+    try:
+        if ':' in peer:  # IPv6 address detected
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        else:  # IPv4 address
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        return sock
+    except socket.error as e:
+        logging.error(f"Error creating socket for {peer}: {e}")
+        return None
