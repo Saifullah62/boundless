@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature, decode_dss_signature
 from cryptography.hazmat.primitives.asymmetric import utils
+from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 from dotenv import load_dotenv
 
