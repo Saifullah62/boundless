@@ -387,7 +387,6 @@ def start_server(blockchain):
                 except Exception as e:
                     logging.error(f"Error handling client connection: {e}")
 
-
 def rate_limit_check(ip):
     """Check if the given IP address exceeds the rate limit."""
     current_time = datetime.now()
@@ -400,3 +399,284 @@ def rate_limit_check(ip):
     # Log new request
     rate_limit_tracker[ip].append(current_time)
     return True
+import random
+import threading
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.load_chain()
+        self.block_times = []  # Track mining times for blocks
+        self.peers = set()  # Set of known peer addresses (e.g., 'IP:PORT')
+
+        # Start the peer discovery thread
+        discovery_thread = threading.Thread(target=self.peer_discovery)
+        discovery_thread.daemon = True
+        discovery_thread.start()
+
+    def add_peer(self, peer_address):
+        """Adds a new peer to the known peers list."""
+        self.peers.add(peer_address)
+
+    def peer_discovery(self):
+        """Periodically attempts to discover new peers using a gossip protocol."""
+        while True:
+            if self.peers:
+                # Select a random peer to communicate with
+                random_peer = random.choice(list(self.peers))
+                try:
+                    self.exchange_peer_list(random_peer)
+                except Exception as e:
+                    logging.error(f"Failed to exchange peers with {random_peer}: {e}")
+            time.sleep(30)  # Adjust the interval as needed
+
+    def exchange_peer_list(self, peer_address):
+        """Sends the current peer list to a peer and receives their peer list."""
+        try:
+            # Establish a connection
+            context = ssl.create_default_context()
+            with socket.create_connection((peer_address, PORT)) as sock:
+                with context.wrap_socket(sock, server_hostname=peer_address) as s:
+                    # Send peer discovery request
+                    s.sendall(f"REQUEST_PEER_LIST|{ACCESS_TOKEN}".encode())
+                    data = b""
+                    while True:
+                        part = s.recv(BUFFER_SIZE)
+                        if not part:
+                            break
+                        data += part
+
+                    received_peers = data.decode().split(",")
+                    for peer in received_peers:
+                        if peer != self.get_self_address():  # Avoid adding self
+                            self.peers.add(peer)
+        except Exception as e:
+            logging.error(f"Error during peer list exchange with {peer_address}: {e}")
+
+    def get_self_address(self):
+        """Retrieve the node's own IP address and port."""
+        hostname = socket.gethostname()
+        ip_address = socket.gethostbyname(hostname)
+        return f"{ip_address}:{PORT}"
+
+# Server modification to handle peer list requests
+def start_server(blockchain):
+    """Starts a server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on port {PORT} with TLS")
+
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    with client_socket:
+                        if not rate_limit_check(address[0]):
+                            logging.warning(f"Rate limit exceeded for {address[0]}")
+                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                            continue
+
+                        request = client_socket.recv(BUFFER_SIZE).decode()
+                        request_parts = request.split("|")
+
+                        # Handle peer list request
+                        if len(request_parts) == 2 and request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
+                            peer_list = ",".join(blockchain.peers)
+                            client_socket.sendall(peer_list.encode())
+                            logging.info(f"Sent peer list to peer at {address}")
+
+                        elif len(request_parts) == 2 and request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
+                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
+                            client_socket.sendall(blockchain_data.encode())
+                            logging.info(f"Sent blockchain to peer at {address}")
+
+                        else:
+                            logging.warning(f"Unauthorized access attempt from {address}")
+                            client_socket.sendall(b"ACCESS_DENIED")
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
+import heapq
+
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.filename = filename
+        self.load_chain()
+        self.block_times = []
+        self.peers = set()
+        self.mempool = []  # Priority queue (min-heap) for unconfirmed transactions
+
+        # Start peer discovery in a separate thread
+        discovery_thread = threading.Thread(target=self.peer_discovery)
+        discovery_thread.daemon = True
+        discovery_thread.start()
+
+    def add_transaction(self, transaction, fee=0):
+        """Adds a transaction to the mempool with an optional fee for prioritization."""
+        # Validate transaction signature
+        if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+            logging.warning(f"Transaction {transaction} has an invalid signature and was not added to the mempool.")
+            return False
+
+        # Use fee and timestamp to prioritize transactions in the mempool
+        priority = (-fee, time.time())  # Negative fee for max-heap behavior using min-heap
+        heapq.heappush(self.mempool, (priority, transaction))
+        logging.info(f"Transaction {transaction} added to mempool with fee {fee}.")
+        return True
+
+    def select_transactions_for_block(self, max_transactions=10):
+        """Selects transactions from the mempool for the next block, prioritizing by fee and timestamp."""
+        selected_transactions = []
+        while self.mempool and len(selected_transactions) < max_transactions:
+            _, transaction = heapq.heappop(self.mempool)
+            selected_transactions.append(transaction)
+        return selected_transactions
+
+    def add_block(self, new_block):
+        """Adds a new block to the blockchain after mining it."""
+        # Select high-priority transactions for the new block
+        new_block.transactions = self.select_transactions_for_block()
+
+        new_block.previous_hash = self.get_latest_block().hash
+        start_time = time.time()
+        new_block.mine_block(self.difficulty)
+        end_time = time.time()
+
+        self.block_times.append(end_time - start_time)
+        logging.info(f"Block {new_block.index} mined in {end_time - start_time:.2f} seconds with difficulty {self.difficulty}")
+
+        self.adjust_difficulty()
+        self.chain.append(new_block)
+        self.save_chain()
+
+    def get_mempool_transactions(self):
+        """Returns the list of transactions currently in the mempool."""
+        return [tx for _, tx in self.mempool]
+def start_server(blockchain):
+    """Starts a server to listen for blockchain requests from peers."""
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("0.0.0.0", PORT))
+        server.listen(5)
+        with context.wrap_socket(server, server_side=True) as tls_server:
+            logging.info(f"Blockchain server listening on port {PORT} with TLS")
+
+            while True:
+                try:
+                    client_socket, address = tls_server.accept()
+                    with client_socket:
+                        if not rate_limit_check(address[0]):
+                            logging.warning(f"Rate limit exceeded for {address[0]}")
+                            client_socket.sendall(b"RATE_LIMIT_EXCEEDED")
+                            continue
+
+                        request = client_socket.recv(BUFFER_SIZE).decode()
+                        request_parts = request.split("|")
+
+                        # Handle different requests
+                        if request_parts[0] == "REQUEST_BLOCKCHAIN" and request_parts[1] == ACCESS_TOKEN:
+                            blockchain_data = json.dumps([blockchain.block_to_dict(block) for block in blockchain.chain])
+                            client_socket.sendall(blockchain_data.encode())
+                            logging.info(f"Sent blockchain to peer at {address}")
+
+                        elif request_parts[0] == "REQUEST_PEER_LIST" and request_parts[1] == ACCESS_TOKEN:
+                            peer_list = ",".join(blockchain.peers)
+                            client_socket.sendall(peer_list.encode())
+                            logging.info(f"Sent peer list to peer at {address}")
+
+                        elif request_parts[0] == "NEW_TRANSACTION":
+                            # Deserialize transaction and add to mempool
+                            transaction_data = json.loads(request_parts[1])
+                            transaction = Transaction(**transaction_data)
+                            blockchain.add_transaction(transaction)
+                            logging.info(f"Received and added new transaction from {address}")
+
+                        elif request_parts[0] == "NEW_BLOCK":
+                            # Deserialize block and validate
+                            block_data = json.loads(request_parts[1])
+                            new_block = blockchain.dict_to_block(block_data)
+                            if blockchain.is_block_valid(new_block):
+                                blockchain.add_block(new_block)
+                                logging.info(f"Received and added new block from {address}")
+
+                        elif request_parts[0] == "HANDSHAKE":
+                            # Basic handshake for compatibility check
+                            client_socket.sendall(b"HANDSHAKE_OK")
+                            logging.info(f"Handshake successful with {address}")
+
+                        else:
+                            logging.warning(f"Unauthorized access attempt from {address}")
+                            client_socket.sendall(b"ACCESS_DENIED")
+                except Exception as e:
+                    logging.error(f"Error handling client connection: {e}")
+def broadcast_transaction(self, transaction):
+    """Broadcasts a new transaction to all known peers."""
+    transaction_data = json.dumps(transaction.to_dict())
+    for peer in self.peers:
+        try:
+            with socket.create_connection((peer, PORT)) as sock:
+                context = ssl.create_default_context()
+                with context.wrap_socket(sock, server_hostname=peer) as s:
+                    s.sendall(f"NEW_TRANSACTION|{transaction_data}".encode())
+                    logging.info(f"Broadcasted transaction to {peer}")
+        except Exception as e:
+            logging.error(f"Failed to broadcast transaction to {peer}: {e}")
+
+def broadcast_block(self, block):
+    """Broadcasts a new block to all known peers."""
+    block_data = json.dumps(self.block_to_dict(block))
+    for peer in self.peers:
+        try:
+            with socket.create_connection((peer, PORT)) as sock:
+                context = ssl.create_default_context()
+                with context.wrap_socket(sock, server_hostname=peer) as s:
+                    s.sendall(f"NEW_BLOCK|{block_data}".encode())
+                    logging.info(f"Broadcasted block to {peer}")
+        except Exception as e:
+            logging.error(f"Failed to broadcast block to {peer}: {e}")
+from concurrent.futures import ThreadPoolExecutor
+
+def validate_chain_in_parallel(self):
+    """Validates the blockchain in parallel for faster performance on large chains."""
+    with ThreadPoolExecutor() as executor:
+        # Validate blocks in parallel
+        validation_results = executor.map(self.is_block_valid, self.chain[1:])
+        return all(validation_results)
+class Blockchain:
+    def __init__(self, difficulty=2, filename="blockchain.json"):
+        # Existing initialization...
+        self.validated_block_cache = {}
+
+    def is_block_valid(self, block):
+        """Validates a single block, with caching to avoid redundant validation."""
+        # Check if block already validated
+        if block.index in self.validated_block_cache:
+            return self.validated_block_cache[block.index]
+
+        # Validate block hash and previous hash
+        if block.hash != block.calculate_hash():
+            return False
+        if block.previous_hash != self.chain[block.index - 1].hash:
+            return False
+
+        # Validate each transaction in the block
+        for transaction in block.transactions:
+            if not transaction.verify_signature(self.get_public_key(transaction.sender)):
+                return False
+
+        # Cache result
+        self.validated_block_cache[block.index] = True
+        return True
+
+    def is_chain_valid(self):
+        """Validates the blockchain using cached and parallel validation."""
+        return self.validate_chain_in_parallel()
