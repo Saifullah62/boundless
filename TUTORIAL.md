@@ -1,119 +1,159 @@
-Boundless Tutorial
-
-Welcome to the Boundless Tutorial! This guide will take you through the complete setup process, from installation to running transactions, with easy-to-follow steps and code examples.
-Table of Contents
-
-    Introduction
-    Setting Up Your Environment
-    Installing Boundless
-    Configuring Environment Variables
-    Connecting to the Blockchain
-    Signing a Transaction
-    Running Tests
-    Troubleshooting
-    Additional Resources
-
-1. Introduction
-
-Boundless is a blockchain application designed to securely connect to a blockchain network and handle private key management. This tutorial will guide you through the steps necessary to get Boundless up and running on your local machine.
-2. Setting Up Your Environment
+Blockchain Network Tutorial
+1. Installation and Setup
 Prerequisites
 
-To run Boundless, you’ll need:
+    Python 3.8+: Ensure Python is installed by running python --version.
 
-    Python 3.6+ installed on your system.
-    pip (Python package installer) for installing dependencies.
+    Install Dependencies: Use pip to install the required libraries:
 
-To check if you have Python and pip, run the following commands:
+    pip install cryptography dotenv pyopenssl numpy scikit-learn
 
-python --version
-pip --version
+Generate SSL Certificates
 
-If you need Python, download it here.
-3. Installing Boundless
+To enable secure peer-to-peer communication, generate SSL certificates for your server:
 
-    Clone the Repository: Start by cloning the Boundless repository to your local machine. Run:
+openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365
 
-git clone https://github.com/Saifullah62/boundless.git
-cd boundless
+Environment Setup
 
-Install Dependencies: Boundless requires several Python packages to function properly. Install these dependencies by running:
+Create a .env file in the same directory as the code to securely store your ACCESS_TOKEN, which will authenticate peer connections:
 
-    pip install -r requirements.txt
+ACCESS_TOKEN=your_secure_token_here
 
-        Note: requirements.txt includes essential packages like requests and python-dotenv.
+2. Key Concepts and Classes
 
-4. Configuring Environment Variables
+This blockchain project is organized around modular classes that each manage core aspects of blockchain, networking, compliance, and security.
 
-Boundless uses environment variables to manage sensitive information like API keys and private keys. We store these values in a .env file for security and flexibility.
-Step-by-Step Setup for .env
+    Blockchain Core: Manages blocks, transactions, and chain validation.
+        Block: Represents individual blocks with transaction data.
+        Transaction: Handles creating and signing transactions.
+        Blockchain: Manages the chain, mining, and difficulty adjustments.
 
-    Create a .env file in the root of the Boundless project directory:
+    Compliance and Privacy Modules:
+        GeoSovereign: Identifies geographic regions for regulatory compliance.
+        RegBlock: Enforces regulatory rules like GDPR or regional laws based on detected regions.
+        TransparencySuite: Tracks user consent for data storage and usage.
+        ErasureGuard: Provides a way to nullify transactions for "right to be forgotten" compliance.
 
-touch .env
+    Machine Learning Anomaly Detection:
+        Isolation Forest: Detects anomalous transactions to flag potential security issues.
 
-Add the following environment variables to your .env file:
+    Blockchain Nodes:
+        Different classes extend blockchain functionality, such as BlockchainNodeSecure for encrypted transactions and BlockchainNodeAI for machine-learning-enhanced anomaly detection.
 
-    NETWORK_URL=https://example-blockchain-node.com
-    API_KEY=your_api_key_here
-    ENCRYPTED_PRIVATE_KEY=your_encrypted_private_key_here
-    KEY_PASSWORD=your_password_here
-    DEBUG=True
+3. Setting Up Your First Blockchain Node
 
-    Verify Environment Variables: Boundless checks if all required variables are loaded. If a variable is missing, it will raise an EnvironmentError with the details of the missing configuration.
+Start by setting up a basic blockchain node. This example uses BlockchainNodeAI for a node with anomaly detection capabilities.
+Code Walkthrough
 
-5. Connecting to the Blockchain
+Open a new Python file or terminal and run the following code to create your first blockchain node:
 
-Once your environment is set up, you can connect to the blockchain network using the connect_to_blockchain function.
-Example Code for Connecting
+from blockchain import BlockchainNodeAI, Transaction  # Ensure the code file is named blockchain.py
 
-Add the following code to blockchain.py or create a separate script to test the connection:
+# Step 1: Initialize a Blockchain Node
+node_A = BlockchainNodeAI("Node_A", difficulty=2)
 
-from blockchain import connect_to_blockchain
+# Step 2: Add Peers
+node_A.add_peer("127.0.0.1:5001")
+node_A.add_peer("127.0.0.1:5002")
 
-response = connect_to_blockchain()
-print("Connected to blockchain:", response)
+# Step 3: Generate Transactions
+tx1 = Transaction("Alice", "Bob", 50)
+tx2 = Transaction("Charlie", "David", 2000)  # A high-value transaction, likely to be flagged by anomaly detection
 
-This function makes a request to the specified blockchain node using NETWORK_URL and API_KEY.
-6. Signing a Transaction
+# Step 4: Process Transactions
+node_A.receive_transaction(tx1)
+node_A.receive_transaction(tx2)
 
-Boundless allows you to sign transactions securely by retrieving and decrypting your private key.
-Example Code for Signing a Transaction
+# Step 5: Mine a Block
+node_A.mine_block()
 
-In blockchain.py, use the sign_transaction function to securely sign data with your private key:
+# Display Blockchain
+for block in node_A.blockchain.chain:
+    print(f"Block {block.index} - Hash: {block.hash}")
 
-from blockchain import sign_transaction
+4. Running Multiple Nodes and Syncing the Blockchain
 
-transaction_data = "Sample transaction data"
-signature = sign_transaction(transaction_data)
-print("Transaction signature:", signature)
+To simulate a multi-node environment:
 
-    Note: sign_transaction will load your encrypted private key and password from the .env file, ensuring it remains secure.
+    Open multiple Python instances or scripts.
+    Create different instances of nodes like BlockchainNodeAI or BlockchainNodeSecure.
+    Connect nodes to each other as peers and exchange transactions.
 
-7. Running Tests
+Example: Multiple Nodes Synchronizing Transactions
 
-To ensure Boundless functions correctly, you can run the test suite included in the repository. This will verify functionality like blockchain connectivity and transaction signing.
+# Initialize nodes
+node_A = BlockchainNodeAI("Node_A", difficulty=2)
+node_B = BlockchainNodeAI("Node_B", difficulty=2)
 
-    Run Tests:
+# Establish peer connections
+node_A.add_peer(node_B)
+node_B.add_peer(node_A)
 
-    python -m unittest discover -s tests
+# Add and process transactions
+tx1 = Transaction("Alice", "Bob", 30)
+node_A.receive_transaction(tx1)
 
-    Interpreting Results:
-        If all tests pass, Boundless is correctly configured.
-        If any test fails, refer to the error message for debugging.
+# Nodes mine blocks
+node_A.mine_block()
+node_B.mine_block()
 
-8. Troubleshooting
+# Sync chains
+node_A.sync_with_peers()
+node_B.sync_with_peers()
 
-Here are some common issues and solutions:
+# Display the final blockchain state
+print("Final Blockchain on Node A:")
+for block in node_A.blockchain.chain:
+    print(f"Block {block.index} - Hash: {block.hash}")
 
-    Missing Environment Variables: If Boundless raises an EnvironmentError, check that your .env file contains all required variables.
-    Connection Errors: Verify the NETWORK_URL and API_KEY. Ensure your network allows access to the specified blockchain node.
-    Private Key Issues: Ensure ENCRYPTED_PRIVATE_KEY and KEY_PASSWORD in your .env file match the expected format for decryption.
+print("\nFinal Blockchain on Node B:")
+for block in node_B.blockchain.chain:
+    print(f"Block {block.index} - Hash: {block.hash}")
 
-9. Additional Resources
+5. Exploring Compliance and Privacy Features
+Using the Transparency Suite for Consent Management
 
-To learn more about blockchain and secure coding practices, consider these resources:
+# Add user consent for specific transactions
+node_A.transparency_suite.add_consent("Alice", "approved")
 
-    Python Dotenv Documentation
-    Blockchain Basics
-    Cryptographic Best Practices
+# Attempt to process a transaction from Alice
+tx2 = Transaction("Alice", "Charlie", 100)
+node_A.receive_transaction(tx2)
+
+# If consent is not "approved," the transaction is rejected
+node_A.mine_block()
+
+Enforcing Regional Compliance
+
+The GeoSovereign and RegBlock classes simulate enforcing region-specific rules.
+
+# Transaction processing with regional compliance
+tx3 = Transaction("Bob", "Eve", 120)
+node_A.receive_transaction(tx3)  # GeoSovereign will detect and apply compliance rules based on region
+node_A.mine_block()
+
+6. AI-Based Anomaly Detection
+
+The BlockchainNodeAI class uses the Isolation Forest model to detect anomalies in transaction patterns.
+
+# Example of high-value transaction that may be flagged
+tx4 = Transaction("Eve", "Frank", 5000)
+node_A.receive_transaction(tx4)  # Transaction flagged if it appears anomalous
+
+7. Auditing with ComplianceAuditToolkit
+
+Perform an audit across the chain for regulatory compliance checks.
+
+node_A.perform_audit()
+
+8. Syncing Blockchains and Broadcasting Transactions
+
+Synchronize blockchains across nodes or broadcast transactions.
+Example of Broadcasting
+
+node_A.broadcast_transaction(tx4)  # Broadcast a transaction to all peers
+
+Final Thoughts
+
+This tutorial guides you through setting up a blockchain network with regulatory compliance, AI-based anomaly detection, and peer-to-peer syncing. Feel free to explore additional modules and experiment with the different types of nodes and configurations to build a robust, secure, and privacy-focused blockchain application.
