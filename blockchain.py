@@ -253,22 +253,39 @@ class Blockchain:
             logging.error(f"Unexpected error while loading blockchain: {e}")
             
 def cleanup_mempool(self):
-        """Placeholder for cleaning up the mempool."""
-        # Implement any necessary logic here
-        pass
+    """
+    Cleans up the mempool by removing invalid or expired transactions.
+    This is a placeholder function with example logic to remove transactions
+    that have already been confirmed or have expired.
+    """
+    # Example logic for cleaning up the mempool:
+    current_time = time.time()
+    valid_transactions = []
+
+    for transaction in self.mempool:
+        # Check if the transaction is still valid (e.g., not confirmed or expired)
+        if not transaction.is_confirmed() and transaction.timestamp > current_time - 3600:  # 1-hour validity
+            valid_transactions.append(transaction)
     
-    @staticmethod
-    def block_to_dict(block):
-        """Converts a block to a dictionary representation."""
-        return {
-            "index": block.index,
-            "previous_hash": block.previous_hash,
-            "transactions": [tx.to_dict() for tx in block.transactions],
-            "timestamp": block.timestamp,
-            "nonce": block.nonce,
-            "merkle_root": block.merkle_root,
-            "hash": block.hash
-        }
+    self.mempool = valid_transactions  # Update the mempool with only valid transactions
+
+@staticmethod
+def block_to_dict(block):
+    """
+    Converts a block to a dictionary representation. This is useful for 
+    serialization and storage, ensuring the block's attributes are in a
+    format compatible with JSON or other data formats.
+    """
+    return {
+        "index": block.index,
+        "previous_hash": block.previous_hash,
+        "transactions": [tx.to_dict() for tx in block.transactions],
+        "timestamp": block.timestamp,
+        "nonce": block.nonce,
+        "merkle_root": getattr(block, 'merkle_root', None),  # Use `getattr` to handle optional attributes
+        "hash": block.hash
+    }
+
 
     def dict_to_block(self, block_dict):
         """Converts a dictionary representation back to a block."""
