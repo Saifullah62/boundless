@@ -594,3 +594,161 @@ for i in range(10):
 
 # Batch verify all transactions
 print(f"Batch verification result: {batch.batch_verify()}")
+
+# Enhancing the Blockchain with Improved Block and Chain Validation Checks
+
+import hashlib
+import json
+import time
+import logging
+import secrets
+
+# Set up logging to capture blockchain activity during validation
+logging.basicConfig(
+    filename='blockchain_validation.log',
+    filemode='w',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+class Transaction:
+    def __init__(self, sender, receiver, amount):
+        self.sender = sender
+        self.receiver = receiver
+        self.amount = amount
+        self.signature = secrets.token_hex(16)  # Placeholder signature for simplicity
+
+    def __repr__(self):
+        return f"Transaction({self.sender} -> {self.receiver}: {self.amount})"
+
+class Block:
+    def __init__(self, index, previous_hash, transactions, timestamp=None, nonce=0):
+        self.index = index
+        self.previous_hash = previous_hash
+        self.transactions = transactions
+        self.timestamp = timestamp or int(time.time())
+        self.nonce = nonce
+        self.hash = self.calculate_hash()
+
+    def calculate_hash(self):
+        block_string = f"{self.index}{self.previous_hash}{json.dumps([tx.__dict__ for tx in self.transactions])}{self.timestamp}{self.nonce}".encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+    def mine_block(self, difficulty):
+        target = "0" * difficulty
+        while self.hash[:difficulty] != target:
+            self.nonce += 1
+            self.hash = self.calculate_hash()
+
+class Blockchain:
+    def __init__(self, difficulty=2):
+        self.chain = [self.create_genesis_block()]
+        self.difficulty = difficulty
+        self.pending_transactions = []
+
+    def create_genesis_block(self):
+        return Block(0, "0", [], nonce=0)
+
+    def get_latest_block(self):
+        return self.chain[-1]
+
+    def add_transaction(self, transaction):
+        self.pending_transactions.append(transaction)
+
+    def mine_pending_transactions(self):
+        if not self.pending_transactions:
+            logging.info("No transactions to mine.")
+            return
+
+        new_block = Block(
+            index=len(self.chain),
+            previous_hash=self.get_latest_block().hash,
+            transactions=self.pending_transactions
+        )
+        
+        new_block.mine_block(self.difficulty)
+        self.chain.append(new_block)
+
+        logging.info(f"Block {new_block.index} mined successfully: {new_block.hash}")
+        self.pending_transactions = []
+
+    def is_chain_valid(self):
+        """
+        Validates the blockchain by checking hashes, previous hashes, and other integrity checks.
+        """
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            # Validate the current block hash
+            recalculated_hash = current_block.calculate_hash()
+            if current_block.hash != recalculated_hash:
+                logging.error(f"Block {i} hash is invalid. Expected: {recalculated_hash}, but found: {current_block.hash}.")
+                return False
+
+            # Validate the link between blocks
+            if current_block.previous_hash != previous_block.hash:
+                logging.error(f"Block {i} has an invalid previous hash. Expected: {previous_block.hash}, but found: {current_block.previous_hash}.")
+                return False
+
+            # Verify all transactions are unaltered by checking their structure (simple signature match here)
+            for tx in current_block.transactions:
+                if not tx.signature or len(tx.signature) != 32:
+                    logging.error(f"Block {i} contains a tampered transaction from {tx.sender} to {tx.receiver}.")
+                    return False
+
+        logging.info("Blockchain validation complete: all blocks are valid.")
+        return True
+
+# Testing the enhanced blockchain with added validation
+# Instantiate blockchain
+test_blockchain = Blockchain(difficulty=2)
+
+# Create and add transactions to blockchain
+transaction1 = Transaction(
+    sender="Alice",
+    receiver="Bob",
+    amount=10
+)
+
+transaction2 = Transaction(
+    sender="Bob",
+    receiver="Charlie",
+    amount=5
+)
+
+# Adding transactions to the blockchain
+test_blockchain.add_transaction(transaction1)
+test_blockchain.add_transaction(transaction2)
+
+# Mine the transactions in a block
+test_blockchain.mine_pending_transactions()
+
+# Adding more transactions and mining a new block
+transaction3 = Transaction(
+    sender="Charlie",
+    receiver="Alice",
+    amount=3
+)
+
+test_blockchain.add_transaction(transaction3)
+test_blockchain.mine_pending_transactions()
+
+# Validate the chain to check for any inconsistencies
+chain_is_valid = test_blockchain.is_chain_valid()
+logging.info(f"Is the blockchain valid? {chain_is_valid}")
+
+# Output the blockchain state for validation purposes
+blockchain_state = [
+    {
+        "index": block.index,
+        "previous_hash": block.previous_hash,
+        "hash": block.hash,
+        "transactions": [tx.__dict__ for tx in block.transactions]
+    }
+    for block in test_blockchain.chain
+]
+
+import pandas as pd
+blockchain_df = pd.DataFrame(blockchain_state)
+print(blockchain_df)
