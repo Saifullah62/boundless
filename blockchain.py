@@ -88,6 +88,9 @@ class Transaction:
         except InvalidSignature:
             logging.warning(f"Invalid signature for transaction from {self.sender} to {self.receiver}.")
             return False
+        except Exception as e:
+            logging.error(f"Error verifying signature: {e}")
+            return False
 
 class MerkleTree:
     """Constructs a Merkle Tree from a list of transactions."""
