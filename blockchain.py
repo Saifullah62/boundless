@@ -152,7 +152,7 @@ class Blockchain:
         discovery_thread.daemon = True
         discovery_thread.start()
 
-    def create_genesis_block(self):
+   def create_genesis_block(self):
         """Creates the first block in the blockchain."""
         return Block(0, "0", [], nonce=0)
 
